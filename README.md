@@ -2,14 +2,16 @@
 
 Indicadores para TradingView escritos en Pine Script v6. Los documentos y la interfaz de los indicadores (ajustes, etiquetas y alertas) están en castellano; el título del indicador en TradingView va en inglés.
 
+Es un proyecto independiente: las personas y entidades en las que se basa se citan como fuente y no participan en él (ver [Independencia](#independencia)).
+
 ## Qué hay aquí
 
 | Carpeta | Qué contiene |
 |---|---|
-| [`JLC/`](JLC/README.md) | Indicadores que aplican reglas de José Luis Cava. Cada script cita en su cabecera el capítulo y la página de donde sale la regla. |
+| [`JLC/`](JLC/README.md) | Indicadores que aplican reglas publicadas por José Luis Cava en sus libros. Cada script cita en su cabecera el capítulo y la página de donde sale la regla. |
 | [`GEN/`](GEN/README.md) | Todo lo demás: scripts propios y adaptaciones de scripts de otros autores, siempre con su crédito. |
 
-Cada carpeta tiene su índice con los scripts que contiene y el enlace a la carpeta de cada uno. En la raíz están también el [`CHANGELOG.md`](CHANGELOG.md), con el historial de versiones de cada script, y la [`LICENSE`](LICENSE).
+Cada carpeta tiene su índice con los scripts que contiene y el enlace a la carpeta de cada uno. En la raíz están también el [`CHANGELOG.md`](CHANGELOG.md), con el historial de versiones de cada script, la [`LICENSE`](LICENSE) y la [`BIBLIOGRAFIA.md`](BIBLIOGRAFIA.md), con las fuentes de los scripts.
 
 Para colaborar, mira [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md). Para avisar de un problema de seguridad, [`.github/SECURITY.md`](.github/SECURITY.md).
 
@@ -50,10 +52,10 @@ Si una carpeta todavía no tiene guías, lleva solo el código.
 
 | Parte | Qué es |
 |---|---|
-| `PRE` | `JLC` si el script aplica una regla de José Luis Cava; `GEN` para todo lo demás. |
+| `PRE` | `JLC` si el script aplica una regla publicada por José Luis Cava; `GEN` para todo lo demás. |
 | `NN` | Dos cifras. La primera es la familia; la segunda, el orden dentro de la familia y del prefijo. |
 | `Familia`, `Nombre` | Sin tildes ni espacios. |
-| `_AUT` | Solo en `GEN`: tres letras del autor del script. `ADL` son los scripts del autor de este repositorio. Sin sufijo si el script no es de nadie en concreto. |
+| `_AUT` | Solo en `GEN`: tres letras de quien hizo el script original (una persona o una entidad), como `DTR`, `GOA` o `PGI`. `ADL` son los scripts del autor de este repositorio. Sin sufijo si el script no es de nadie en concreto. |
 
 La familia dice para qué sirve el script, no de dónde viene:
 
@@ -100,10 +102,16 @@ El historial de cada versión está en [`CHANGELOG.md`](CHANGELOG.md). Los archi
 
 - El código propio se publica con la Mozilla Public License 2.0 ([`LICENSE`](LICENSE)). Cada script la indica al principio de su cabecera, con el nombre del autor.
 - Si un script parte de código de otro autor, conserva la licencia original y lleva su crédito: quién es el autor, qué licencia tiene y qué se ha mejorado. Se ve en la cabecera del código y en la tabla de su carpeta (`GEN/` o `JLC/`).
-- Las reglas de José Luis Cava se citan por capítulo y página. Cada script indica en su cabecera de dónde sale su regla.
+- Las reglas de José Luis Cava se citan por capítulo y página. Cada script indica en su cabecera de dónde sale su regla. Todas las fuentes están en [`BIBLIOGRAFIA.md`](BIBLIOGRAFIA.md).
 
 ## Aviso
 
 Los scripts son herramientas para analizar gráficos. No son asesoramiento financiero ni una recomendación de compra o venta, y no garantizan ningún resultado.
 
-Este proyecto es independiente: no tiene relación con TradingView ni con José Luis Cava, ni cuenta con su respaldo.
+## Independencia
+
+Este proyecto es independiente. No tiene ninguna relación con TradingView ni con las personas y entidades que figuran como fuentes en [`BIBLIOGRAFIA.md`](BIBLIOGRAFIA.md): no han colaborado en los scripts, no los han revisado ni aprobado, y no los respaldan ni los patrocinan. Se las cita solo como fuente de las reglas, los indicadores o el código en los que se basan los scripts.
+
+Las interpretaciones, las cifras que la fuente no da (marcadas en el código) y los errores son de este repositorio.
+
+Los nombres y marcas citados pertenecen a sus titulares.
