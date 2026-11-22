@@ -1,0 +1,80 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[GEN74 Management] Follow-up SMAs 20/50/150", shorttitle = "GEN74 Follow-up SMAs", overlay = true)
+
+// ————— About
+// Versión: 0.1.1.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: tres medias móviles simples (SMA) del cierre, calculadas sobre velas semanales y dibujadas sobre el
+// precio: corta (20, verde), media (50, amarilla) y larga (150, roja). Son los tramos de seguimiento de una
+// posición según Goat Academy: la corta marca la salida, la media la entrada y la larga el filtro de fondo.
+// Cómo se lee: precio bajo la corta, salida (según la fuente); precio que cruza al alza la media, entrada; precio
+// bajo la larga, sin compras. Colores por defecto, ajustables. No hay señales ni alertas: el script solo dibuja.
+// Datos y marco: gráfico actual, cualquier marco temporal; las medias se piden en semanal con request.security,
+// sobre el mismo símbolo. En marcos menores que el semanal la media de la semana en curso puede cambiar hasta
+// que cierre la semana.
+// Fuente: Felix, Goat Academy. Periodos 20, 50 y 150 y su uso: parámetros del autor, sin fuente que los fije en
+// este script. Cálculo con ta.sma de TradingView.
+// Créditos: adaptación del script «Tríada de Medias Semanales (20 / 50 / 150)» de Felix (Goat Academy). Mejoras:
+// estructura del lote, ajustes con límites, constantes, ficha en ajustes y comentarios. El cálculo es el del
+// original.
+// Marcas: sin marca = regla de la fuente.
+// [Aportado] Periodos 20, 50 y 150 y los usos de salida, entrada y filtro: de Goat Academy, sin fuente que los
+// fije en este script.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+
+// ————— Constants
+const int SMA_SHORT_DEFAULT = 20 // [Aportado] SMA corta, salida
+const int SMA_MID_DEFAULT = 50 // [Aportado] SMA media, entrada
+const int SMA_LONG_DEFAULT = 150 // [Aportado] SMA larga, filtro de fondo
+const string TF_WEEKLY = "W" // Marco en que se calculan las medias
+const color COLOR_SHORT = color.green // Línea de la SMA corta
+const color COLOR_MID = color.yellow // Línea de la SMA media
+const color COLOR_LONG = color.red // Línea de la SMA larga
+const string GRP_MA = "Medias" // Ajustes de los periodos
+const string GRP_LOOK = "Aspecto" // Ajustes que solo cambian el dibujo
+const string GRP_INFO = "Info" // Bloque informativo
+
+
+// ————— Inputs
+int shortLenInput = input.int(SMA_SHORT_DEFAULT, "SMA corta (velas semanales)", minval = 1, maxval = 500,
+ group = GRP_MA,
+ tooltip = "Velas semanales de la SMA corta. Según la fuente hace de salida: el precio por debajo de ella " +
+ "marca cerrar. Con 20: unas 20 semanas.")
+
+int midLenInput = input.int(SMA_MID_DEFAULT, "SMA media (velas semanales)", minval = 1, maxval = 500,
+ group = GRP_MA,
+ tooltip = "Velas semanales de la SMA media. Según la fuente hace de entrada: el precio que la cruza al alza " +
+ "confirma el inicio de la compra. Con 50: unas 50 semanas, casi un año.")
+
+int longLenInput = input.int(SMA_LONG_DEFAULT, "SMA larga (velas semanales)", minval = 1, maxval = 1000,
+ group = GRP_MA,
+ tooltip = "Velas semanales de la SMA larga. Según la fuente hace de filtro de fondo: con el precio por debajo " +
+ "no se compra. Con 150: unas 150 semanas, casi 3 años.")
+
+// Colores. Sin «inline»: un solo ajuste por fila.
+color shortColorInput = input.color(COLOR_SHORT, "Color SMA corta", group = GRP_LOOK)
+color midColorInput = input.color(COLOR_MID, "Color SMA media", group = GRP_LOOK)
+color longColorInput = input.color(COLOR_LONG, "Color SMA larga", group = GRP_LOOK)
+
+// Ficha de solo lectura («active = false»).
+string infoInput = input.text_area("Tres SMA calculadas en semanal y dibujadas sobre el precio: salida, entrada y " +
+ "filtro de fondo según Goat Academy. Sin señales ni alertas.", "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+// Medias sobre velas semanales, para que se vean igual con el gráfico en diario o intradía. Misma llamada que el
+// original: request.security sin desplazamiento.
+float smaShort = request.security(syminfo.tickerid, TF_WEEKLY, ta.sma(close, shortLenInput))
+float smaMid = request.security(syminfo.tickerid, TF_WEEKLY, ta.sma(close, midLenInput))
+float smaLong = request.security(syminfo.tickerid, TF_WEEKLY, ta.sma(close, longLenInput))
+
+
+// ————— Visuals
+// Cada plot aparece en Settings > Style. Títulos sin cifras fijas: los periodos son ajustables.
+plot(smaShort, "SMA corta (salida)", color = shortColorInput, linewidth = 1)
+plot(smaMid, "SMA media (entrada)", color = midColorInput, linewidth = 1)
+plot(smaLong, "SMA larga (filtro de fondo)", color = longColorInput, linewidth = 1)

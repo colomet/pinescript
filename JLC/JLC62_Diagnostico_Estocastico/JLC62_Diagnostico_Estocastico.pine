@@ -1,0 +1,73 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC62 Diagnostic] Stochastic: 14 {80/60/40/20}", shorttitle="JLC62 Stochastic", overlay=false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: estocástico de Lane con las dos líneas (%K rápida sin suavizar y %D) y los cuatro niveles de Cava: 80 y 20
+//   de sobrecompra y sobreventa, 60 y 40 de filtro de tendencia. Solo traza; no emite señales ni alertas.
+// Cómo se lee: %K (azul) es la línea rápida; %D (naranja) es su versión allanada. Sobre 80 = sobrecompra, bajo 20 =
+//   sobreventa; en tendencia fuerte puede quedarse ahí mucho tiempo sin anunciar un giro, así que conviene mirar el
+//   ADX. Sobre 60 en semanal apoya tendencia alcista y bajo 40, bajista, leyendo siempre %K (la línea rápida).
+// Datos y marco: símbolo y marco del gráfico. Los niveles 60/40 son filtro de tendencia solo en semanal; en diario
+//   úsalos como sobrecompra y sobreventa relajadas. Cava trabaja con 14 periodos.
+// Fuente: José Luis Cava, El arte de especular, cap. V. Qué mide, intervalo de 14, línea K rápida y D lenta: V.1.1,
+//   p. 141. Fórmula de %K y periodo 14 de Hartle: p. 142. %D como razón de sumas de 3 periodos: p. 143. Niveles
+//   80/20 y su advertencia en tendencia fuerte: V.1.2, p. 143. Niveles 60/40 con la línea rápida en semanal: cap.
+//   I.5.3, p. 37.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Hueco declarado] el script no implementa las figuras que Cava desarrolla en el capítulo: bisagra (V.1.5,
+//   pp. 149-150), alarmas (V.1.6, p. 151), %K en un extremo (V.1.7, p. 152), fallo (V.1.8, pp. 152-154) y
+//   estocástico pop de Bernstein (V.1.9, p. 154). Quedan para una tanda posterior.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Niveles del estocástico.
+// Sobrecompra y sobreventa (Cava, V.1.2, p. 143)
+float STOCH_OVERBOUGHT_LEVEL = 80
+float STOCH_OVERSOLD_LEVEL   = 20
+// Filtro de tendencia en semanal, sobre la línea rápida (Cava, I.5.3, p. 37)
+float STOCH_TREND_UP_LEVEL   = 60
+float STOCH_TREND_DOWN_LEVEL = 40
+
+// ————— Inputs
+// Periodos de %K y %D.
+// %K con 14 periodos (Cava, V.1.1, p. 142)
+int kLengthInput = input.int(14, "Período %K (n)", minval = 1)
+// %D con 3 periodos (Cava, p. 143)
+int dLengthInput = input.int(3, "Período %D (suma, no SMA)", minval = 1)
+
+// ————— Calculations
+// Máximo y mínimo del intervalo de %K.
+hh = ta.highest(high, kLengthInput)
+ll = ta.lowest(low, kLengthInput)
+
+// Guarda de división por cero: si el rango es 0 (sesión plana, barra vacía, activo poco líquido) se arrastra el
+// último valor válido y en el primer dato se parte de 50 (lectura neutra). No altera nada con rango > 0.
+rango = hh - ll
+
+// %K = 100·(cierre − mínimo)/(máximo − mínimo) (Cava, p. 142), sin suavizar a diferencia del estocástico lento habitual
+var float rawK = na
+rawK := rango > 0 ? 100 * (close - ll) / rango : nz(rawK[1], 50.0)
+
+// %D = 100 · suma de 3 de (cierre − mínimo) / suma de 3 de (máximo − mínimo) (Cava, p. 143); no es ta.sma(rawK, 3)
+numSum = math.sum(close - ll, dLengthInput)
+denSum = math.sum(hh - ll, dLengthInput)
+var float dLine = na
+dLine := denSum > 0 ? 100 * numSum / denSum : nz(dLine[1], 50.0)
+
+// ————— Visuals
+// Las dos líneas, los cuatro niveles y la banda entre 80 y 20.
+plot(rawK, "%K", color = color.new(#2962FF, 0), linewidth = 2)
+plot(dLine, "%D", color = color.new(#FF6D00, 0), linewidth = 1)
+
+h80 = hline(STOCH_OVERBOUGHT_LEVEL, "Sobrecompra (80)", color = color.gray, linestyle = hline.style_solid)
+h60 = hline(STOCH_TREND_UP_LEVEL, "Tendencia alcista (60)", color = color.gray, linestyle = hline.style_dashed)
+h40 = hline(STOCH_TREND_DOWN_LEVEL, "Tendencia bajista (40)", color = color.gray, linestyle = hline.style_dashed)
+h20 = hline(STOCH_OVERSOLD_LEVEL, "Sobreventa (20)", color = color.gray, linestyle = hline.style_solid)
+
+fill(h80, h20, color = color.new(color.gray, 92))

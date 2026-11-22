@@ -1,0 +1,513 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © okhanLAB (original) · modificado para el lote [GEN41 Trend]
+
+// Versión: 1.6.2.0 · Explicit Versioning (W.X.Y.Z)
+
+//@version=6
+indicator("[GEN41 Trend] Long-term linear regression channel (300 bars) {1 sigma / 90-95-99 % dispersion} (okhanLAB)", shorttitle="GEN41 LinReg channel", overlay = true, max_bars_back = 5000)
+
+// -- Qué es ---------------------------------------------------------------
+// Canal de regresión lineal: la recta que mejor encaja con los cierres de un
+// tramo y dos bandas a su alrededor. Por defecto el tramo tiene largo fijo (300
+// barras); con Inicio = Automático empieza en la última vela de mucho volumen.
+//
+// -- Fuente ----------------------------------------------------------------
+// Origen: okhanLAB, sobre el Linear Regression Channel de TradingView.
+// [Aportado]: no es de Cava, no hay capítulo ni página que citar.
+// Cifras: 70 y 300 son del original [Aportado]. z = 1,6449 / 1,9600 / 2,5758
+// son cuantiles de la normal [Verificado: cálculo]. Resto del diseño: [Propuesta].
+// [Hueco declarado] Con menos de 3 barras de historial no se dibuja el canal.
+// -------------------------------------------------------------------------
+
+// ————— Constants
+float Z_90 = 1.6449
+float Z_95 = 1.9600
+float Z_99 = 2.5758
+string LVL_90 = "90 %"
+string LVL_95 = "95 %"
+string LVL_99 = "99 %"
+string END_TODAY = "Hoy"
+string END_DATE = "Fecha fija"
+string END_WEEK = "Último cierre semanal"
+string START_AUTO = "Automático (vela de más volumen)"
+string START_DATE = "Fecha"
+string START_FIXED = "Fijo (longitud mínima)"
+int MAX_BACK = 4900
+int END_TIME_DEFAULT = timestamp("15 Oct 2026 00:00 +0000")
+int START_TIME_DEFAULT = timestamp("01 Jan 2026 00:00 +0000")
+string REC_FIXED = "Usar el canal de la mínima"
+string REC_OLDER = "Buscar la mayor anterior a la mínima"
+string POS_TL = "Arriba izquierda"
+string POS_TR = "Arriba derecha"
+string POS_BL = "Abajo izquierda"
+string POS_BR = "Abajo derecha"
+
+// ————— Inputs
+string GRP_START = "1 · Inicio del canal"
+string startModeInput = input.string(START_FIXED, "Inicio del canal", options = [START_FIXED, START_AUTO, START_DATE], group = GRP_START, tooltip = "Desde dónde empieza el canal.\n• Fijo (de serie): las últimas N barras de la Longitud mínima. No busca velas de volumen.\n• Automático: busca la vela de más volumen de la ventana y dibuja el más recto entre el canal desde ella y el fijo.\n• Fecha: la recta arranca en la primera barra con fecha igual o posterior a la Fecha de inicio. No se elige entre automático y fijo y no hay alertas.\nEl panel, fila Inicio, dice qué ha hecho y desde qué fecha.")
+int startTimeInput = input.time(START_TIME_DEFAULT, "Fecha de inicio", group = GRP_START, active = startModeInput == START_DATE, tooltip = "Solo con Inicio = Fecha. Si es posterior a la fecha final, o deja menos de 3 barras, el panel avisa y no se dibuja el canal. Con otro Inicio se atenúa y se ignora.")
+int minLengthInput = input.int(300, "Longitud mínima (barras)", minval = 3, maxval = 1000, group = GRP_START, tooltip = "Largo del canal en barras. Con Inicio = Fijo (de serie), el canal usa siempre las últimas N barras: pon N aquí.\n• Más barras: tendencia más larga y estable; el precio sale menos de las bandas.\n• Menos barras: reacciona antes, con más ruido.\nEn diario, 300 ≈ 14 meses; en semanal, 300 ≈ 6 años.\nCon Inicio = Automático es el largo mínimo del canal. No se usa con Inicio = Fecha.")
+
+string GRP_SEARCH = "2 · Búsqueda de la vela de volumen (solo con Inicio = Automático)"
+int maxLengthInput = input.int(600, "Ventana de volumen (barras)", minval = 5, maxval = 1000, group = GRP_SEARCH, tooltip = "Solo con Inicio = Automático. Hasta cuántas barras atrás busca la vela de más volumen. La zona de búsqueda va de ahí hasta la barra de la Longitud mínima.\n• Más grande: puede anclarse en sucesos antiguos y el canal sale más largo.\n• Más pequeña: solo mira lo reciente.\nDebe ser mayor que la mínima. De serie, 600 ≈ 28 meses en diario.")
+string recentModeInput = input.string(REC_FIXED, "Si la vela más fuerte es muy reciente", options = [REC_FIXED, REC_OLDER], group = GRP_SEARCH, tooltip = "Solo con Inicio = Automático. La vela de más volumen es «muy reciente» si está a menos barras que la Longitud mínima: un canal desde ella sería demasiado corto. Qué hacer entonces:\n• Usar el canal de la mínima: se ignora esa vela y se dibuja el canal de la Longitud mínima. Es lo que mejor funcionó en el estudio de la bitácora (D8).\n• Buscar la mayor anterior a la mínima: se busca otra vela de más volumen, más antigua, en la zona sombreada, y se dibuja el más recto entre el canal desde ella y el de la mínima.\nEn el gráfico: ▼ naranja = vela de la que arranca el canal; ▼ gris = vela de más volumen que no se usa; ◆ gris = la más fuerte, descartada por reciente.")
+
+string GRP_END = "3 · Final del canal"
+string endModeInput = input.string(END_WEEK, "Final del canal", options = [END_WEEK, END_TODAY, END_DATE], group = GRP_END, tooltip = "Dónde termina el canal.\n• Último cierre semanal (de serie): la última barra de la última semana completa. No cambia hasta que cierre la siguiente; si la semana ya cerró (fin de semana), termina en la última barra. Una raya punteada azul marca el final. No da alertas; el panel dice a cuántas sigmas está hoy.\n• Hoy: la última barra; se recalcula con cada dato. Es el único final con alertas.\n• Fecha fija: la última barra con fecha igual o anterior a la Fecha final. Sirve para comprobar después si lo ocurrido estaba previsto; activa Extender líneas a la derecha para ver el precio posterior.")
+int endTimeInput = input.time(END_TIME_DEFAULT, "Fecha final", group = GRP_END, active = endModeInput == END_DATE, tooltip = "Solo con Final = Fecha fija. El canal se calcula con los datos hasta ese día. Con otro Final se atenúa y se ignora.")
+
+string GRP_BAND = "4 · Banda de dispersión"
+string levelInput = input.string(LVL_95, "Nivel de la banda exterior", options = [LVL_90, LVL_95, LVL_99], group = GRP_BAND, tooltip = "Porcentaje de cierres del tramo que quedan dentro de la banda exterior. La banda interior (1σ) no cambia.\n• 90 %: banda más estrecha.\n• 99 %: banda más ancha y menos alertas.\nDescribe el pasado: hacia delante, al 95 % solo contiene unos 3 de cada 4 cierres de la semana siguiente.")
+
+string GRP_DISPLAY = "5 · Visualización"
+bool showInfoInput = input.bool(true, "Mostrar el resultado en el panel (R · tiempo · banda)", group = GRP_DISPLAY, tooltip = "Muestra u oculta la fila «Resultado» del panel.\n• R: 1 = precios en línea recta, 0 = sin tendencia.\n• Abarca: el tiempo que cubre el canal.\n• Banda: el nivel de la banda exterior.\n• Precio: a cuántas sigmas de la recta cierra la última barra del canal; cerca de ±2 es el borde de la banda del 95 %.\n• Hoy: solo con el final congelado, a cuántas sigmas de la recta prolongada está el último precio.\nLos avisos salen siempre.")
+bool showTableInput = input.bool(true, "Mostrar inicio, búsqueda y final en el panel", group = GRP_DISPLAY, tooltip = "Muestra u oculta las tres primeras filas del panel: desde qué fecha empieza el canal y cómo se ha elegido, qué ha buscado (solo con Inicio = Automático) y dónde termina.")
+string tablePosInput = input.string(POS_TR, "Posición del panel", options = [POS_TL, POS_TR, POS_BL, POS_BR], group = GRP_DISPLAY, display = display.none, tooltip = "Esquina del gráfico donde va el panel entero (inicio, búsqueda, final, resultado y avisos). Cámbiala si tapa las velas o la barra de dibujo de TradingView.")
+string tablePos = tablePosInput == POS_TL ? position.top_left : tablePosInput == POS_TR ? position.top_right : tablePosInput == POS_BL ? position.bottom_left : position.bottom_right
+bool showStartMarkInput = input.bool(true, "Marcas de inicio y final del canal", group = GRP_DISPLAY, tooltip = "Rayas verticales punteadas entre las dos bandas interiores.\n• Inicio: naranja si el canal arranca en la vela de más volumen; gris si es el canal fijo. Con Inicio = Fecha no se dibuja: ahí el punto ya lo marcan los tiradores de la fecha.\n• Final: azul, solo con Final = Último cierre semanal y cuando hay barras posteriores.\nLos colores se cambian en Colores.")
+bool showZoneInput = input.bool(true, "Zona de búsqueda de volumen", group = GRP_DISPLAY, active = startModeInput == START_AUTO, tooltip = "Solo con Inicio = Automático. Sombrea las barras donde busca la vela de más volumen: de la barra más antigua de la ventana a la barra de la Longitud mínima. Los bordes punteados marcan dónde empieza y dónde acaba la búsqueda. Una vela de más volumen fuera de la zona, hacia hoy, es «muy reciente».")
+bool showPeakMarkInput = input.bool(true, "Marca de la vela de más volumen", group = GRP_DISPLAY, active = startModeInput == START_AUTO, tooltip = "Solo con Inicio = Automático. Marcas sobre las velas de más volumen; pasa el ratón por encima para ver la explicación.\n• ▼ naranja: la vela de la que arranca el canal.\n• ▼ gris: la vela de más volumen de la ventana, que no se usa (muy reciente, o el canal fijo es más recto).\n• ◆ gris: con «Buscar la mayor anterior a la mínima», la más fuerte de todas, descartada por reciente.\nEl panel, fila Búsqueda, dice hace cuántas barras fue y por qué.")
+bool extendLeftInput = input.bool(false, "Extender líneas a la izquierda", group = GRP_DISPLAY, tooltip = "Prolonga las cinco líneas hacia el pasado, sin límite. Sirve para ver el canal sobre más historia; no cambia el cálculo.")
+bool extendRightInput = input.bool(false, "Extender líneas a la derecha", group = GRP_DISPLAY, tooltip = "Prolonga las cinco líneas hacia el futuro, sin límite. Con Proyectar las líneas una semana más ya llegan al viernes próximo; esto las alarga más. No son un límite hacia el futuro: la banda del 95 % solo contiene unos 3 de cada 4 cierres de la semana siguiente.")
+string extendStyle = switch
+    extendLeftInput and extendRightInput => extend.both
+    extendLeftInput => extend.left
+    extendRightInput => extend.right
+    => extend.none
+bool showMixInput = input.bool(true, "Avisar si la ventana mezcla regímenes", group = GRP_DISPLAY, tooltip = "Añade al panel una línea ⚠ si la primera mitad del canal sube y la segunda baja, o al revés. Es solo un dato: no es una señal ni una razón para entrar o no, y no cambia el canal, las bandas ni las alertas.")
+bool showProjInput = input.bool(true, "Proyectar las líneas una semana más", group = GRP_DISPLAY, tooltip = "Prolonga las cinco líneas una semana más allá del final del canal, con la misma pendiente: con Final = Último cierre semanal, hasta el viernes próximo. No usa datos nuevos y no es una previsión: la banda describe el pasado. Se apaga aquí.")
+
+string GRP_VERIFY = "6 · Verificación"
+bool verifyInput = input.bool(true, "Modo verificación (ventana de datos)", group = GRP_VERIFY, tooltip = "Publica en la ventana de datos (barra lateral derecha) la longitud, el modo, R, sigma, la pendiente, las posiciones en sigma y las bandas, solo en la última barra. No dibuja nada ni cambia el cálculo. Sirve para comparar con una referencia externa; desactívalo si no vas a comprobar.")
+
+string GRP_COLOR = "7 · Colores"
+color colorMiddle = input.color(color.new(#915500, 60), "Recta central", group = GRP_COLOR)
+color colorOuter = input.color(color.new(color.blue, 85), "Banda 1σ", group = GRP_COLOR)
+color colorOuter2 = input.color(color.new(color.blue, 70), "Banda exterior", group = GRP_COLOR)
+color colorStartAuto = input.color(color.new(color.orange, 20), "Marca de inicio: modo auto", group = GRP_COLOR)
+color colorStartMin = input.color(color.new(color.gray, 20), "Marca de inicio: modo mín y fijo", group = GRP_COLOR)
+
+string ABOUT_1 = "QUÉ ES · Canal de regresión lineal: una recta que encaja con los cierres de un tramo y dos bandas a su alrededor. De serie, las últimas 300 barras. Familia 4 Rector [Aportado], no es de Cava.\n"
+string ABOUT_2 = "CÓMO FUNCIONA · Inicio = Fijo (de serie): la recta de las últimas barras de la Longitud mínima. Inicio = Automático: busca la vela de más volumen de la ventana, traza la recta desde ella, la compara con el canal fijo y dibuja la más recta (mayor R). Inicio = Fecha: arranca donde tú digas.\n"
+string ABOUT_3 = "CONFIGURAR · De serie: canal fijo de 300 barras que termina en el último cierre semanal, con las líneas proyectadas una semana. Otro largo: Longitud mínima (300 ≈ 6 años en semanal, 14 meses en diario). Alertas: Final = Hoy. Ver desde qué vela de volumen parte: Inicio = Automático. Comprobar lo ocurrido: Final = Fecha fija.\n"
+string ABOUT_5 = "SE LEE · Recta = tendencia media. Banda interior = 1σ, unos 2 de cada 3 cierres. Banda exterior = 90, 95 o 99 % de los cierres del tramo. El panel, arriba a la derecha, dice desde dónde empieza el canal, qué ha buscado, dónde termina, el resultado y los avisos.\n"
+string ABOUT_6 = "NO ES · Una previsión: hacia delante, la banda del 95 % contiene unos 3 de cada 4 cierres. La proyección de una semana solo prolonga la recta.\n"
+string ABOUT_R = "RANGO · Final = Último cierre semanal (de serie) y Fecha fija congelan el canal y no dan alertas; Hoy lo recalcula con cada dato y es el único con alertas, siempre que Inicio no sea Fecha.\n"
+string ABOUT_V = "VERIFICACIÓN · Con el modo activado, la ventana de datos muestra los valores del canal (campos V) para compararlos con una referencia.\n"
+string aboutText = input.text_area(ABOUT_1 + ABOUT_2 + ABOUT_3 + ABOUT_5 + ABOUT_6 + ABOUT_R + ABOUT_V, title = "Ficha", group = "8 · Acerca de este indicador", active = false)
+
+// ————— Function declarations
+// @function Longitud automática. Si la vela de más volumen de la
+// ventana está a menos de minLen barras, devuelve minLen; con useOlder
+// usa en su lugar la mayor vela anterior a minLen. Si no es reciente,
+// devuelve las barras que hay hasta esa vela.
+// ta.highestbars da la distancia a la vela de más volumen.
+// @param minLen (int) Longitud mínima del canal, en barras.
+// @param maxLen (int) Ventana de búsqueda de la vela de más volumen, en barras.
+// @param useOlder (bool) Si la vela es muy reciente, buscar la mayor anterior a minLen.
+// @returns [longitud, hay volumen, pico reciente, barras hasta la vela candidata, barras hasta la más fuerte]
+f_autoLength(int minLen, int maxLen, bool useOlder) =>
+    float vol = nz(volume)
+    bool hasVolume = ta.cum(vol) > 0
+    int lastPeakBack = -ta.highestbars(vol, maxLen)
+    bool recentPeak = hasVolume and not na(lastPeakBack) and lastPeakBack < minLen
+    int window = maxLen - minLen
+    float volOld = vol[minLen]
+    float peak = ta.highest(volOld, window)
+    int peakBack = -ta.highestbars(volOld, window)
+    bool anchorOk = hasVolume and (not recentPeak or useOlder) and peak > 0 and not na(peakBack)
+    int autoLen = anchorOk ? minLen + peakBack : minLen
+    int candAgo = anchorOk ? minLen + peakBack : lastPeakBack
+    [autoLen, hasVolume, recentPeak, candAgo, lastPeakBack]
+
+// @function Escribe una fila del panel: nombre y valor.
+// @param t (table) El panel.
+// @param row (int) Número de fila, desde 0.
+// @param name (string) Texto de la primera columna.
+// @param value (string) Texto de la segunda columna.
+f_row(table t, int row, string name, string value) =>
+    table.cell(t, 0, row, name, text_color = color.new(colorOuter, 0), text_halign = text.align_left, text_size = size.small)
+    table.cell(t, 1, row, value, text_color = color.new(colorOuter, 0), text_halign = text.align_left, text_size = size.small)
+
+// @function Canal de regresión lineal de `length` barras que termina
+// `offset` barras atrás: 0 = hoy, 1 = la barra anterior.
+// Calcula solo en la última barra, que es la que se dibuja, pero
+// se llama en todas: así se conserva el histórico de `src`.
+// @param src (float) Serie de precios.
+// @param length (int) Barras del canal.
+// @param offset (int) Barras entre hoy y el final del canal.
+// @returns [precio inicio, precio fin, sigma, R de Pearson]
+f_channel(float src, int length, int offset) =>
+    float startPrice = na
+    float endPrice = na
+    float stdDev = na
+    float pearsonR = na
+    if barstate.islast and not na(length) and length > 2
+        float sumX = 0.0
+        float sumY = 0.0
+        float sumXSqr = 0.0
+        float sumXY = 0.0
+        for i = 0 to length - 1
+            float val = src[i + offset]
+            float per = i + 1.0
+            sumX += per
+            sumY += val
+            sumXSqr += per * per
+            sumXY += val * per
+        float slope = (length * sumXY - sumX * sumY) / (length * sumXSqr - sumX * sumX)
+        float average = sumY / length
+        float intercept = average - slope * sumX / length + slope
+        float daY = intercept + slope * (length - 1) / 2.0
+        float fit = intercept
+        float resAcc = 0.0
+        float dsxx = 0.0
+        float dsyy = 0.0
+        float dsxy = 0.0
+        for j = 0 to length - 1
+            float price = src[j + offset]
+            float dxt = price - average
+            float dyt = fit - daY
+            float res = price - fit
+            resAcc += res * res
+            dsxx += dxt * dxt
+            dsyy += dyt * dyt
+            dsxy += dxt * dyt
+            fit += slope
+        stdDev := math.sqrt(resAcc / (length - 2))
+        pearsonR := dsxx == 0 or dsyy == 0 ? 0.0 : dsxy / math.sqrt(dsxx * dsyy)
+        startPrice := intercept + slope * (length - 1)
+        endPrice := intercept
+    [startPrice, endPrice, stdDev, pearsonR]
+
+// ————— Calculations
+// Si la mínima alcanza la ventana, la mínima pasa a ventana - 1 y se avisa.
+// Con Inicio = Fijo la ventana no limita la mínima: la ventana interna
+// se ensancha lo justo para que la búsqueda de volumen, que no se usa, no falle.
+bool startFixed = startModeInput == START_FIXED
+bool minClamped = not startFixed and minLengthInput >= maxLengthInput
+int minLen = startFixed ? minLengthInput : math.min(minLengthInput, maxLengthInput - 1)
+int maxLen = startFixed ? math.max(maxLengthInput, minLengthInput + 1) : maxLengthInput
+
+bool useOlder = recentModeInput == REC_OLDER
+[autoLen, hasVolume, recentPeak, peakAgo, strongAgo] = f_autoLength(minLen, maxLen, useOlder)
+
+// Nivel elegido: z bilateral
+float zBand = switch levelInput
+    LVL_90 => Z_90
+    LVL_99 => Z_99
+    => Z_95
+
+// Rango del canal. Con fecha final se guardan los valores de esa barra:
+// índice, hora y lo que habría salido de la longitud automática ese día. Con último
+// cierre semanal se guardan los de la última barra de la última semana completa.
+bool endDate = endModeInput == END_DATE
+bool endWeek = endModeInput == END_WEEK
+bool endFixed = endDate or endWeek
+bool startManual = startModeInput == START_DATE
+var int endBarIdx = na
+var int endBarTime = na
+var int autoLenEnd = na
+var bool hasVolumeEnd = false
+var bool recentPeakEnd = false
+var int peakAgoEnd = na
+var int strongAgoEnd = na
+var int startBarIdx = na
+var int startBarTime = na
+string weekTf = timeframe.in_seconds() <= timeframe.in_seconds("W") ? "W" : timeframe.period
+bool weekStart = timeframe.change(weekTf)
+bool weekClosedNow = barstate.islast and timenow >= time_close(weekTf)
+// Barras de una semana: se miden en las tres últimas semanas completas y se toma la mayor,
+// para que un festivo no acorte la proyección. Sin datos aún, se usa la razón entre una semana y la barra.
+var int lastWeekStartIdx = na
+var int weekBars1 = na
+var int weekBars2 = na
+var int weekBars3 = na
+if weekStart and bar_index > 0
+    if not na(lastWeekStartIdx)
+        weekBars3 := weekBars2
+        weekBars2 := weekBars1
+        weekBars1 := bar_index - lastWeekStartIdx
+    lastWeekStartIdx := bar_index
+int weekBarsMax = math.max(nz(weekBars1, 0), nz(weekBars2, 0), nz(weekBars3, 0))
+int projBars = math.min(400, weekBarsMax > 0 ? weekBarsMax : math.max(1, math.round(timeframe.in_seconds("W") / timeframe.in_seconds())))
+if not endWeek and (not endFixed or time <= endTimeInput)
+    endBarIdx := bar_index
+    endBarTime := time
+    autoLenEnd := autoLen
+    hasVolumeEnd := hasVolume
+    recentPeakEnd := recentPeak
+    peakAgoEnd := peakAgo
+    strongAgoEnd := strongAgo
+if endWeek and weekStart and bar_index > 0
+    endBarIdx := bar_index - 1
+    endBarTime := time[1]
+    autoLenEnd := autoLen[1]
+    hasVolumeEnd := hasVolume[1]
+    recentPeakEnd := recentPeak[1]
+    peakAgoEnd := peakAgo[1]
+    strongAgoEnd := strongAgo[1]
+if endWeek and weekClosedNow
+    endBarIdx := bar_index
+    endBarTime := time
+    autoLenEnd := autoLen
+    hasVolumeEnd := hasVolume
+    recentPeakEnd := recentPeak
+    peakAgoEnd := peakAgo
+    strongAgoEnd := strongAgo
+if na(startBarIdx) and time >= startTimeInput
+    startBarIdx := bar_index
+    startBarTime := time
+int endOffset = na(endBarIdx) ? na : bar_index - endBarIdx
+int offEnd = nz(endOffset, 0)
+int manualLen = startManual and not na(startBarIdx) and not na(endBarIdx) ? endBarIdx - startBarIdx + 1 : na
+int autoLenUse = nz(autoLenEnd, minLen)
+int lookNeeded = offEnd + (startManual ? nz(manualLen, 0) : startFixed ? minLen : maxLen)
+bool tooFar = lookNeeded > MAX_BACK
+bool rangeOk = not na(endOffset) and not tooFar
+int availBars = na(endBarIdx) ? na : endBarIdx + 1
+int lenAuto = rangeOk ? math.min(autoLenUse, availBars) : na
+int lenMin = rangeOk ? math.min(minLen, availBars) : na
+int lenManual = rangeOk ? manualLen : na
+
+// Canal del final elegido: se queda el que mejor encaja, el de mayor R, como el original
+[startA, endA, devA, rA] = f_channel(close, lenAuto, offEnd)
+[startM, endM, devM, rM] = f_channel(close, lenMin, offEnd)
+[startS, endS, devS, rS] = f_channel(close, lenManual, offEnd)
+bool useAuto = not startManual and not startFixed and hasVolumeEnd and lenAuto != lenMin and rA > rM
+
+float startPrice = startManual ? startS : useAuto ? startA : startM
+float endPrice = startManual ? endS : useAuto ? endA : endM
+float stdDev = startManual ? devS : useAuto ? devA : devM
+float pearsonR = startManual ? rS : useAuto ? rA : rM
+int channelLen = startManual ? lenManual : useAuto ? lenAuto : lenMin
+
+// Mezcla de regímenes: el canal dibujado se parte en dos mitades sin solape (con largo impar
+// queda fuera la barra central) y se compara el signo de la pendiente de cada una. La pendiente en el
+// tiempo es precio final menos precio inicial de la mitad. Solo informa: no entra en ninguna señal.
+int mixHalf = na(channelLen) ? na : math.floor(channelLen / 2)
+int mixOffsetOld = offEnd + nz(channelLen, 0) - nz(mixHalf, 0)
+[mixStartO, mixEndO, mixDevO, mixRO] = f_channel(close, mixHalf, mixOffsetOld)
+[mixStartN, mixEndN, mixDevN, mixRN] = f_channel(close, mixHalf, offEnd)
+bool mixes = not na(mixEndO) and not na(mixEndN) and math.sign(mixEndO - mixStartO) != math.sign(mixEndN - mixStartN)
+
+float upperStart1 = startPrice + stdDev
+float upperEnd1 = endPrice + stdDev
+float lowerStart1 = startPrice - stdDev
+float lowerEnd1 = endPrice - stdDev
+
+float upperStart2 = startPrice + zBand * stdDev
+float upperEnd2 = endPrice + zBand * stdDev
+float lowerStart2 = startPrice - zBand * stdDev
+float lowerEnd2 = endPrice - zBand * stdDev
+
+// Canal que había en la barra anterior, con la misma regla: sirve para que la
+// alerta salte cuando el precio sale de la banda, no mientras sigue fuera
+int prevAutoLen = math.min(nz(autoLen[1], minLen), bar_index)
+int prevMinLen = math.min(minLen, bar_index)
+[pStartA, pEndA, pDevA, pRA] = f_channel(close, prevAutoLen, 1)
+[pStartM, pEndM, pDevM, pRM] = f_channel(close, prevMinLen, 1)
+bool prevUseAuto = not startFixed and hasVolume[1] and prevAutoLen != prevMinLen and pRA > pRM
+float prevEnd = prevUseAuto ? pEndA : pEndM
+float prevDev = prevUseAuto ? pDevA : pDevM
+bool prevAbove = close[1] > prevEnd + zBand * prevDev
+bool prevBelow = close[1] < prevEnd - zBand * prevDev
+
+// ————— Visuals
+var line baseLine = line.new(na, na, na, na, extend = extendStyle, color = colorMiddle, width = 1)
+var line upper1 = line.new(na, na, na, na, extend = extendStyle, color = colorOuter, width = 1)
+var line lower1 = line.new(na, na, na, na, extend = extendStyle, color = colorOuter, width = 1)
+var line upper2 = line.new(na, na, na, na, extend = extendStyle, color = colorOuter2, width = 1)
+var line lower2 = line.new(na, na, na, na, extend = extendStyle, color = colorOuter2, width = 1)
+var line startMark = line.new(na, na, na, na, style = line.style_dotted, color = colorStartMin, width = 1)
+var line endMark = line.new(na, na, na, na, style = line.style_dotted, color = colorOuter2, width = 1)
+var table panel = table.new(tablePos, 2, 5, border_width = 0)
+var box zoneBox = box.new(bar_index, close, bar_index, close, border_color = color(na), border_style = line.style_dotted, bgcolor = color(na))
+var label strongMark = label.new(na, na, "", color = colorStartMin, style = label.style_diamond, size = size.tiny)
+var label peakMark = label.new(na, na, "", color = colorStartMin, style = label.style_triangledown, size = size.tiny)
+
+bool canDraw = not na(endBarIdx) and not na(channelLen) and channelLen > 2 and not na(endPrice)
+int startShownTime = time[offEnd + nz(channelLen, 1) - 1]
+
+// Posiciones en sigma: la del cierre de la barra final y la de hoy sobre la
+// recta prolongada. Con sigma 0 quedan en na. Las usan el panel y la verificación.
+float slopePerBar = channelLen > 1 ? (endPrice - startPrice) / (channelLen - 1) : na
+float posSigmaEnd = na
+float posSigmaToday = na
+if barstate.islast and canDraw and stdDev > 0
+    posSigmaEnd := (close[offEnd] - endPrice) / stdDev
+    posSigmaToday := (close - (endPrice + slopePerBar * offEnd)) / stdDev
+
+if barstate.islast
+    string warnText = ""
+    if not startManual and not startFixed and not hasVolumeEnd
+        warnText += "\n⚠ Sin volumen: longitud fija"
+    if not startManual and minClamped
+        warnText += "\n⚠ Mín ≥ ventana: Mín ajustado a " + str.tostring(minLen)
+    if not startManual and not na(lenMin) and lenMin < minLen
+        warnText += "\n⚠ Historial corto: canal de " + str.tostring(lenMin) + " barras en vez de " + str.tostring(minLen)
+    if useAuto and lenAuto < autoLenUse
+        warnText += "\n⚠ Historial corto: canal automático de " + str.tostring(lenAuto) + " barras en vez de " + str.tostring(autoLenUse)
+    if not na(availBars) and availBars < 3
+        warnText += "\n⚠ Menos de 3 barras de historial: no se dibuja el canal"
+    if startManual and startBarIdx == 0 and startTimeInput < startBarTime
+        warnText += "\n⚠ Inicio anterior al primer dato: empieza en la primera barra"
+    if endDate and na(endBarIdx)
+        warnText += "\n⚠ Fecha final anterior al primer dato"
+    if endWeek and na(endBarIdx)
+        warnText += "\n⚠ Sin semana completa en el historial"
+    if startManual and na(startBarIdx)
+        warnText += "\n⚠ Fecha de inicio posterior al último dato"
+    if startManual and not na(manualLen) and manualLen < 3
+        warnText += "\n⚠ Menos de 3 barras entre inicio y final"
+    if tooFar
+        warnText += "\n⚠ Rango fuera del historial disponible"
+    if not endDate and endTimeInput != END_TIME_DEFAULT
+        warnText += "\n⚠ Fecha final sin efecto: Final no es Fecha fija"
+    if not startManual and startTimeInput != START_TIME_DEFAULT
+        warnText += "\n⚠ Fecha de inicio sin efecto: Inicio no es Fecha"
+    if canDraw
+        int x1 = endBarIdx - channelLen + 1
+        int x2 = endBarIdx
+        int xp = showProjInput ? x2 + projBars : x2
+        float dp = showProjInput ? slopePerBar * projBars : 0.0
+        line.set_xy1(baseLine, x1, startPrice)
+        line.set_xy2(baseLine, xp, endPrice + dp)
+        line.set_xy1(upper1, x1, upperStart1)
+        line.set_xy2(upper1, xp, upperEnd1 + dp)
+        line.set_xy1(lower1, x1, lowerStart1)
+        line.set_xy2(lower1, xp, lowerEnd1 + dp)
+        line.set_xy1(upper2, x1, upperStart2)
+        line.set_xy2(upper2, xp, upperEnd2 + dp)
+        line.set_xy1(lower2, x1, lowerStart2)
+        line.set_xy2(lower2, xp, lowerEnd2 + dp)
+        if showStartMarkInput and not startManual
+            line.set_xy1(startMark, x1, lowerStart1)
+            line.set_xy2(startMark, x1, upperStart1)
+            line.set_color(startMark, useAuto ? colorStartAuto : colorStartMin)
+        else
+            line.set_xy1(startMark, int(na), float(na))
+            line.set_xy2(startMark, int(na), float(na))
+        if showStartMarkInput and endWeek and offEnd > 0
+            line.set_xy1(endMark, x2, lowerEnd1)
+            line.set_xy2(endMark, x2, upperEnd1)
+        else
+            line.set_xy1(endMark, int(na), float(na))
+            line.set_xy2(endMark, int(na), float(na))
+        bool peakKnown = not startManual and not startFixed and hasVolumeEnd and not na(peakAgoEnd)
+        string peakState = useAuto ? "usada como inicio" : (recentPeakEnd and not useOlder) ? "muy reciente: se usa el canal de la mínima" : lenAuto != lenMin ? "el canal fijo es más recto" : "el automático coincide con el fijo"
+        string peakWhen = peakKnown ? str.format_time(time[offEnd + peakAgoEnd], "yyyy-MM-dd") + ", hace " + str.tostring(peakAgoEnd + offEnd) + " barras" : ""
+        if peakKnown and showPeakMarkInput
+            label.set_xy(peakMark, endBarIdx - peakAgoEnd, high[offEnd + peakAgoEnd])
+            label.set_color(peakMark, useAuto ? colorStartAuto : colorStartMin)
+            label.set_tooltip(peakMark, "Vela de más volumen de la ventana (" + peakWhen + "): " + peakState)
+        else
+            label.set_xy(peakMark, int(na), float(na))
+        bool strongShown = peakKnown and showPeakMarkInput and useOlder and recentPeakEnd and not na(strongAgoEnd) and strongAgoEnd != peakAgoEnd
+        if strongShown
+            label.set_xy(strongMark, endBarIdx - strongAgoEnd, high[offEnd + strongAgoEnd])
+            label.set_color(strongMark, colorStartMin)
+            label.set_tooltip(strongMark, "La más fuerte de todas (hace " + str.tostring(strongAgoEnd + offEnd) + " barras) es muy reciente: no se usa como inicio")
+        else
+            label.set_xy(strongMark, int(na), float(na))
+        string posText = not na(posSigmaEnd) ? " · precio " + (posSigmaEnd > 0 ? "+" : "") + str.tostring(math.round(posSigmaEnd, 2)) + "σ" : ""
+        string todayText = endFixed and offEnd > 0 and not na(posSigmaToday) ? " · hoy " + (posSigmaToday > 0 ? "+" : "") + str.tostring(math.round(posSigmaToday, 2)) + "σ" : ""
+        if showMixInput and mixes
+            warnText += "\n⚠ Ventana que mezcla regímenes (solo informativo)"
+        string warnShown = str.trim(warnText)
+        int searchBars = math.min(maxLen, nz(availBars, 0))
+        bool zoneOk = not startManual and not startFixed and nz(availBars, 0) > minLen
+        if showZoneInput and zoneOk
+            float zTop = high[offEnd + minLen]
+            float zBot = low[offEnd + minLen]
+            for k = minLen to searchBars - 1
+                zTop := math.max(zTop, high[offEnd + k])
+                zBot := math.min(zBot, low[offEnd + k])
+            box.set_lefttop(zoneBox, endBarIdx - searchBars + 1, zTop)
+            box.set_rightbottom(zoneBox, endBarIdx - minLen, zBot)
+            box.set_bgcolor(zoneBox, color.new(colorStartMin, 88))
+            box.set_border_color(zoneBox, colorStartMin)
+        else
+            box.set_bgcolor(zoneBox, color(na))
+            box.set_border_color(zoneBox, color(na))
+        string startHow = startManual ? "Fecha elegida" : startFixed ? "Fijo" : useAuto ? "Automático, desde la vela de más volumen" : "Automático, gana el canal fijo"
+        string startRow = startHow + " · desde " + str.format_time(startShownTime, "yyyy-MM-dd") + " · " + str.tostring(channelLen) + " barras"
+        string searchRow = startFixed ? "no hay: el canal es fijo" : startManual ? "no hay: el inicio es una fecha" : "no hay barras más antiguas que la mínima"
+        if zoneOk
+            string zoneDates = str.format_time(time[offEnd + searchBars - 1], "yyyy-MM-dd") + " → " + str.format_time(time[offEnd + minLen], "yyyy-MM-dd")
+            string volNote = peakKnown ? " · vela de más volumen " + peakWhen + ": " + peakState : " · sin volumen"
+            string olderNote = (peakKnown and useOlder and recentPeakEnd and peakAgoEnd >= minLen) ? " · la más fuerte (◆ gris, hace " + str.tostring(strongAgoEnd + offEnd) + " barras) es muy reciente" : ""
+            searchRow := zoneDates + volNote + olderNote
+        string endName = endWeek ? "Último cierre semanal" : endDate ? "Fecha fija" : "Hoy"
+        string endRow = endName + " · " + str.format_time(endFixed ? endBarTime : time, "yyyy-MM-dd") + (showProjInput ? " · proyección de " + str.tostring(projBars) + " barras" : "")
+        float spanDays = (nz(endFixed ? endBarTime : time, time) - startShownTime) / 86400000.0
+        string spanText = na(spanDays) ? "" : "abarca ≈ " + (spanDays < 730 ? str.tostring(math.round(spanDays / 30.44)) + " meses" : str.tostring(math.round(spanDays / 365.25, 1)) + " años")
+        string resultRow = "R " + str.tostring(math.round(pearsonR, 3)) + " · " + (spanText == "" ? "" : spanText + " · ") + "banda " + levelInput + posText + todayText
+        if showTableInput
+            f_row(panel, 0, "Inicio", startRow)
+            f_row(panel, 1, "Búsqueda", searchRow)
+            f_row(panel, 2, "Final", endRow)
+        else
+            table.clear(panel, 0, 0, 1, 2)
+        if showInfoInput
+            f_row(panel, 3, "Resultado", resultRow)
+        else
+            table.clear(panel, 0, 3, 1, 3)
+        if warnShown != ""
+            f_row(panel, 4, "Avisos", warnShown)
+        else
+            table.clear(panel, 0, 4, 1, 4)
+    else
+        line.set_xy1(startMark, int(na), float(na))
+        line.set_xy2(startMark, int(na), float(na))
+        line.set_xy1(endMark, int(na), float(na))
+        line.set_xy2(endMark, int(na), float(na))
+        label.set_xy(peakMark, int(na), float(na))
+        label.set_xy(strongMark, int(na), float(na))
+        box.set_bgcolor(zoneBox, color(na))
+        box.set_border_color(zoneBox, color(na))
+        table.clear(panel, 0, 0, 1, 3)
+        string msg = str.trim(warnText)
+        f_row(panel, 4, "Avisos", msg == "" ? "⚠ No se puede dibujar el canal" : msg)
+
+// Modo verificación: solo ventana de datos y solo en la última barra.
+// La pendiente es por barra y en unidades de precio. Las posiciones en sigma llevan
+// guarda: con sigma 0 devuelven na. Decimales: precios y sigma, 2; R y pendiente, 3;
+// posiciones en sigma, 2; contadores y 0/1, ninguno.
+bool showV = verifyInput and barstate.islast
+int modeCode = startManual ? 2 : useAuto ? 1 : 0
+plot(showV ? channelLen : na, "V · longitud del canal (barras)", display = display.data_window, precision = 0)
+plot(showV ? modeCode : na, "V · modo (0 mín, 1 auto, 2 manual)", display = display.data_window, precision = 0)
+plot(showV ? pearsonR : na, "V · R de Pearson", display = display.data_window, precision = 3)
+plot(showV ? stdDev : na, "V · sigma del canal (precio)", display = display.data_window, precision = 2)
+plot(showV ? slopePerBar : na, "V · pendiente (precio por barra)", display = display.data_window, precision = 3)
+plot(showV ? posSigmaEnd : na, "V · posición del precio en sigma, al final del canal", display = display.data_window, precision = 2)
+plot((showV and endFixed) ? posSigmaToday : na, "V · posición de hoy sobre el canal proyectado, en sigma", display = display.data_window, precision = 2)
+plot(showV ? endPrice : na, "V · recta al final del canal", display = display.data_window, precision = 2)
+plot(showV ? upperEnd2 : na, "V · banda exterior superior al final", display = display.data_window, precision = 2)
+plot(showV ? lowerEnd2 : na, "V · banda exterior inferior al final", display = display.data_window, precision = 2)
+plot(showV ? autoLenUse : na, "V · longitud automática candidata", display = display.data_window, precision = 0)
+plot(showV ? (recentPeakEnd ? 1 : 0) : na, "V · pico de volumen reciente (1 sí)", display = display.data_window, precision = 0)
+plot(showV ? (hasVolumeEnd ? 1 : 0) : na, "V · hay volumen (1 sí)", display = display.data_window, precision = 0)
+
+// ————— Alerts
+// Salida nueva de la banda exterior: hoy fuera y en la barra
+// anterior dentro de su propio canal. No es regla de Cava. Solo con Final = Hoy
+// e Inicio distinto de Fecha: con fechas manuales el canal es de estudio.
+bool alertsOn = not endFixed and not startManual
+bool newAbove = barstate.islast and alertsOn and close > upperEnd2 and not prevAbove
+bool newBelow = barstate.islast and alertsOn and close < lowerEnd2 and not prevBelow
+// Vuelta a la banda: en la barra anterior el cierre estaba fuera de su
+// propio canal y hoy está dentro de la banda exterior de hoy. Cruce de la recta
+// central: el cierre pasa de un lado de la recta al otro entre la barra anterior y
+// hoy; salta en cada cruce, no solo tras salir de la banda. Mismas condiciones que
+// la salida. No son reglas de Cava.
+bool backFromAbove = barstate.islast and alertsOn and prevAbove and close <= upperEnd2
+bool backFromBelow = barstate.islast and alertsOn and prevBelow and close >= lowerEnd2
+bool crossUp = barstate.islast and alertsOn and close[1] < prevEnd and close >= endPrice
+bool crossDown = barstate.islast and alertsOn and close[1] > prevEnd and close <= endPrice
+alertcondition(newAbove, "44 LinReg · sale por encima de la banda exterior", "{{ticker}}: el precio sale por encima de la banda exterior del canal de regresión. Dispersión, no previsión. [Aportado] [Propuesta]")
+alertcondition(newBelow, "44 LinReg · sale por debajo de la banda exterior", "{{ticker}}: el precio sale por debajo de la banda exterior del canal de regresión. Dispersión, no previsión. [Aportado] [Propuesta]")
+alertcondition(backFromAbove, "44 LinReg · vuelve a la banda desde arriba", "{{ticker}}: el precio vuelve dentro de la banda exterior del canal de regresión desde arriba. Dispersión, no previsión. [Aportado] [Propuesta]")
+alertcondition(backFromBelow, "44 LinReg · vuelve a la banda desde abajo", "{{ticker}}: el precio vuelve dentro de la banda exterior del canal de regresión desde abajo. Dispersión, no previsión. [Aportado] [Propuesta]")
+alertcondition(crossUp, "44 LinReg · cruza la recta central hacia arriba", "{{ticker}}: el precio cruza la recta central del canal de regresión hacia arriba. Dispersión, no previsión. [Aportado] [Propuesta]")
+alertcondition(crossDown, "44 LinReg · cruza la recta central hacia abajo", "{{ticker}}: el precio cruza la recta central del canal de regresión hacia abajo. Dispersión, no previsión. [Aportado] [Propuesta]")

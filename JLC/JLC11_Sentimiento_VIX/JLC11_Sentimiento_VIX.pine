@@ -1,0 +1,98 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC11 Sentiment] VIX vs SMA10 + bands", shorttitle = "JLC11 VIX",
+ overlay = false, precision = 2)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: compara el VIX con su media simple de 10 sesiones y dibuja bandas porcentuales alrededor de ella.
+//   Mide miedo o complacencia respecto a lo normal reciente, no respecto a un nivel absoluto.
+// Cómo se lee: línea oscura = VIX; gris = su SMA10. Banda +12 %: señal de compra al cierre (triángulo verde).
+//   Cruz gris: quinta sesión tras la señal, cuando el sistema cancela los largos.
+//   Banda +5 %: sesgo alcista a 5 sesiones. Banda -5 %: sesgo bajista a 5 sesiones.
+//   Línea morada = VIX3M. Fondo naranja: el VIX supera al VIX3M (backwardation), estrés inmediato.
+// Datos y marco: VIX y VIX3M por input (CBOE:VIX y CBOE:VIX3M por defecto); no usa el símbolo del gráfico. Diario.
+// Fuente: José Luis Cava, El arte de especular, cap. II.2.3.2 «Sistema de especulación basado en un concepto
+//   dinámico de la volatilidad», pp. 60-62 (paráfrasis): bandas del VIX sobre su SMA10 y sistema de compra al
+//   cierre por encima del +12 %, con los largos cancelados cinco sesiones después.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Aportado] VIX3M y backwardation: no proceden de Cava.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Cifras de la fuente: cap. II.2.3.2, pp. 60-62.
+const float BANDA_SENAL_COMPRA = 1.12 // +12 %: cierre del VIX sobre la SMA10 por este nivel = compra (p. 62)
+const float BANDA_SESGO_ALCISTA = 1.05 // +5 %: sesgo alcista a 5 sesiones (nota 35, p. 61)
+const float BANDA_SESGO_BAJISTA = 0.95 // -5 %: sesgo bajista a 5 sesiones (nota 33, p. 61)
+const int SESIONES_CANCELACION = 5 // Los largos se cancelan cinco sesiones después de la señal (p. 62)
+
+const string GRUPO_DATOS = "Datos"
+const string GRUPO_VISUAL = "Visualización"
+
+// ————— Inputs
+string vixSymbolInput = input.symbol("CBOE:VIX", "Símbolo del VIX", group = GRUPO_DATOS,
+ tooltip = "El script NO usa el símbolo del gráfico. Si CBOE:VIX no está en tu plan, prueba TVC:VIX.")
+string vix3mSymbolInput = input.symbol("CBOE:VIX3M", "Símbolo del VIX3M", group = GRUPO_DATOS,
+ tooltip = "[Aportado]: no procede de Cava. Si no carga, prueba TVC:VIX3M.")
+int vixSmaLenInput = input.int(10, "Período SMA del VIX", minval = 1, maxval = 200, group = GRUPO_DATOS,
+ tooltip = "Fuente: media simple de las 10 últimas sesiones. Cambiarlo aleja el script de las cifras de la fuente.")
+bool mostrarVix3mInput = input.bool(true, "Mostrar VIX3M y estructura de plazo", group = GRUPO_VISUAL,
+ tooltip = "Dibuja el VIX3M y colorea el fondo cuando el VIX lo supera (backwardation). [Aportado].")
+bool contarSesionesInput = input.bool(true, "Marcar la sesión de cancelación (+5)", group = GRUPO_VISUAL,
+ tooltip = "Marca con una cruz la quinta sesión tras la señal de compra, cuando el sistema cancela los largos.")
+string fichaInput = input.text_area(
+ "Cava, El arte de especular, II.2.3 (pp. 60-62). Solo diario. VIX3M [Aportado].",
+ "Ficha", active = false)
+
+// ————— Calculations
+// Datos: el VIX y el VIX3M se piden por input; el script no usa el símbolo del gráfico.
+float vix = request.security(vixSymbolInput, timeframe.period, close, ignore_invalid_symbol = true)
+float vix3m = mostrarVix3mInput ?
+ request.security(vix3mSymbolInput, timeframe.period, close, ignore_invalid_symbol = true) : na
+
+float vixSma = ta.sma(vix, vixSmaLenInput) // Media simple de 10 sesiones de la fuente (p. 61)
+
+// Bandas porcentuales sobre la SMA10 (pp. 61-62).
+float bandaAlta = vixSma * BANDA_SENAL_COMPRA
+float bandaMedia = vixSma * BANDA_SESGO_ALCISTA
+float bandaBaja = vixSma * BANDA_SESGO_BAJISTA
+
+// Señal del sistema: el VIX cruza por encima de la banda del +12 %.
+bool senalCompra = ta.crossover(vix, bandaAlta)
+
+// Cancelación de los largos 5 sesiones después de la señal.
+var int barraSenal = na
+if senalCompra
+    barraSenal := bar_index
+bool cancelaSistema = contarSesionesInput and not na(barraSenal) and bar_index - barraSenal == SESIONES_CANCELACION
+
+// Estructura de plazo: backwardation (VIX > VIX3M) = estrés inmediato. [Aportado]
+bool backwardation = mostrarVix3mInput and not na(vix3m) and vix > vix3m
+
+// ————— Visuals
+plot(vix, "VIX", color = color.new(#212121, 0), linewidth = 2)
+plot(vixSma, "SMA10 VIX", color = color.new(#616161, 0))
+plot(bandaAlta, "+12% (señal de compra, cancela a 5 sesiones)", color = color.new(color.green, 30))
+plot(bandaMedia, "+5% (sesgo alcista a 5 sesiones)", color = color.new(color.green, 65))
+plot(bandaBaja, "-5% (sesgo bajista a 5 sesiones)", color = color.new(color.red, 40))
+plot(vix3m, "VIX3M [Aportado]", color = color.new(#8E24AA, 40), linewidth = 1)
+
+plotshape(senalCompra, "Señal de compra del sistema (+12%)", shape.triangleup, location.bottom,
+ color.new(color.green, 0), size = size.small)
+plotshape(cancelaSistema, "Cancelación del sistema (5 sesiones)", shape.xcross, location.bottom,
+ color.new(color.gray, 20), size = size.tiny)
+
+bgcolor(backwardation ? color.new(color.orange, 88) : na, title = "Backwardation VIX > VIX3M [Aportado]")
+
+// ————— Alerts
+alertcondition(senalCompra, "JLC11 VIX · señal de compra (+12% sobre SMA10)",
+ "El VIX ha cerrado por encima del +12% de su media de 10 sesiones: señal de compra del sistema; " +
+ "cancelar largos 5 sesiones después.")
+alertcondition(ta.crossunder(vix, bandaBaja), "JLC11 VIX · sesgo bajista (-5% bajo SMA10)",
+ "El VIX ha caído un 5% por debajo de su media de 10 sesiones: sesgo bajista a 5 sesiones.")
+alertcondition(backwardation and not backwardation[1], "JLC11 VIX · entrada en backwardation",
+ "El VIX ha superado al VIX3M: estrés inmediato en la estructura de plazo. [Aportado]")

@@ -1,0 +1,82 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[GEN42 Rector] Control SMAs: 6/70/200 (Trullas)", shorttitle = "GEN42 Control SMAs", overlay = true, precision = 2)
+
+// ————— About
+// Datos del script: versión, qué es, fuente, créditos y marcas. Sin enlaces ni referencias privadas.
+// Versión: 0.1.0.0 (Explicit Versioning W.X.Y.Z) · 2026-11-14
+// Qué es: tres medias móviles simples (SMA) del precio en un solo script: rápida, media y lenta.
+//   Se dibujan sobre las velas. No emite señales ni alertas.
+// Fuente: media aritmética de las últimas N velas. Indicador estándar. Los periodos 6, 70 y 200
+//   son los del autor y no hay fuente que los fije.
+// Créditos: agrupación y periodos por defecto de David Trullas, citados por cortesía.
+//   El cálculo es el estándar de Pine (ta.sma); el código es propio.
+// Marcas: [Aportado] periodos 6, 70 y 200, de Trullas.
+// Aviso: herramienta de análisis; no es recomendación de inversión.
+
+
+// ————— Constants
+// Todo valor fijo, con nombre. «const» y SNAKE_CASE. Una cifra sin fuente se marca.
+const int    FAST_DEFAULT  = 6                        // [Aportado] periodo de la media rápida
+const int    MID_DEFAULT   = 70                       // [Aportado] periodo de la media intermedia
+const int    SLOW_DEFAULT  = 200                      // [Aportado] periodo de la media lenta
+const int    WIDTH_DEFAULT = 1                        // Grosor de las líneas, en píxeles
+const int    MAX_BARS      = 1000                     // Límite de los periodos, en velas
+const color  COLOR_FAST    = #2962FF                  // Azul: media rápida
+const color  COLOR_MID     = #FF9800                  // Naranja: media intermedia
+const color  COLOR_SLOW    = #F23645                  // Rojo: media lenta
+const string GRP_CALC      = "Cálculo"                // Ajustes que cambian el valor
+const string GRP_LOOK      = "Aspecto"                // Ajustes que solo cambian el dibujo
+const string GRP_INFO      = "Info"                   // Bloque informativo
+const string LOOK_FAST     = "fast"                   // Clave «inline»: color y grosor de la rápida
+const string LOOK_MID      = "mid"                    // Clave «inline»: color y grosor de la intermedia
+const string LOOK_SLOW     = "slow"                   // Clave «inline»: color y grosor de la lenta
+
+
+// ————— Inputs
+// Todo lo que el usuario puede ajustar, junto. Aparece en Settings > Inputs. Sufijo «Input».
+
+float sourceInput = input.source(close, "Fuente", group = GRP_CALC,
+     tooltip = "Precio con el que se calculan las tres medias. Por defecto, el cierre.")
+
+int fastInput = input.int(FAST_DEFAULT, "Media rápida (velas)", minval = 1, maxval = MAX_BARS, group = GRP_CALC,
+     tooltip = "Velas de la media rápida. Con 6: 6 sesiones en diario (algo más de 1 semana), 6 semanas en semanal.")
+
+int midInput = input.int(MID_DEFAULT, "Media intermedia (velas)", minval = 1, maxval = MAX_BARS, group = GRP_CALC,
+     tooltip = "Velas de la media intermedia. Con 70: 14 semanas en diario, algo más de 1 año en semanal.")
+
+int slowInput = input.int(SLOW_DEFAULT, "Media lenta (velas)", minval = 1, maxval = MAX_BARS, group = GRP_CALC,
+     tooltip = "Velas de la media lenta. Con 200: 40 semanas en diario, unos 3,8 años en semanal.")
+
+// Filas «inline»: título solo en el primer ajuste; el segundo, con título vacío (si no, se descuadra).
+color fastColorInput = input.color(COLOR_FAST, "Rápida: color / grosor", group = GRP_LOOK, inline = LOOK_FAST)
+int   fastWidthInput = input.int(WIDTH_DEFAULT, "", minval = 1, maxval = 4, group = GRP_LOOK, inline = LOOK_FAST,
+     tooltip = "Grosor de la línea, de 1 a 4 píxeles. Solo dibujo.")
+
+color midColorInput = input.color(COLOR_MID, "Intermedia: color / grosor", group = GRP_LOOK, inline = LOOK_MID)
+int   midWidthInput = input.int(WIDTH_DEFAULT, "", minval = 1, maxval = 4, group = GRP_LOOK, inline = LOOK_MID,
+     tooltip = "Grosor de la línea, de 1 a 4 píxeles. Solo dibujo.")
+
+color slowColorInput = input.color(COLOR_SLOW, "Lenta: color / grosor", group = GRP_LOOK, inline = LOOK_SLOW)
+int   slowWidthInput = input.int(WIDTH_DEFAULT, "", minval = 1, maxval = 4, group = GRP_LOOK, inline = LOOK_SLOW,
+     tooltip = "Grosor de la línea, de 1 a 4 píxeles. Solo dibujo.")
+
+// Ficha de solo lectura («active = false»).
+string infoInput = input.text_area("Tres medias móviles simples (6, 70 y 200 velas) sobre el precio. Sin señales ni alertas.",
+     "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+float smaFast = ta.sma(sourceInput, fastInput)        // Suma de N valores dividida entre N
+float smaMid  = ta.sma(sourceInput, midInput)
+float smaSlow = ta.sma(sourceInput, slowInput)
+
+
+// ————— Visuals
+// Cada plot aparece en Settings > Style con su casilla y color.
+plot(smaFast, "SMA rápida", color = fastColorInput, linewidth = fastWidthInput)
+plot(smaMid, "SMA intermedia", color = midColorInput, linewidth = midWidthInput)
+plot(smaSlow, "SMA lenta", color = slowColorInput, linewidth = slowWidthInput)

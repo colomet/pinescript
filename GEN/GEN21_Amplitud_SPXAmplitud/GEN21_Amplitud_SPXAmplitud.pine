@@ -1,0 +1,132 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[GEN21 Breadth] SPX vs S5FI/S5TH: divergence {50d/200d}", shorttitle = "GEN21 Breadth", overlay = false,
+ precision = 1)
+
+// ————— About
+// Versión: 0.1.1.0 (Explicit Versioning W.X.Y.Z) · 2026-11-21.
+// Qué es: panel de amplitud del S&P 500. Dibuja el % de valores sobre su media de 50 sesiones (S5FI) y de 200
+// (S5TH) y marca cuando el índice hace máximos (o mínimos) de la ventana mientras la amplitud no lo
+// acompaña: divergencia.
+// Es un aviso de contexto, no una señal de entrada. Funciona sobre cualquier gráfico; la amplitud solo existe en
+// diario y superiores (en intradía el panel sale vacío).
+// Fuente: no procede de Cava. S5FI, S5TH y los niveles 30 / 50 / 70 son convención técnica de uso general [Aportado].
+// La detección de divergencia y su ventana son una mecanización propia de una lectura a ojo [Propuesta].
+// [Hueco declarado] Los indicadores de amplitud con regla propia en Cava (nuevos máximos / nuevos mínimos, línea
+// Avance/Descenso, McClellan, índice Arms) no están implementados en este script.
+// Créditos: código propio; no reutiliza código ajeno.
+// Aviso: herramienta de análisis; no es recomendación de inversión.
+
+
+// ————— Constants
+// Niveles de convención técnica [Aportado]: su valor por defecto es constante; el usuario puede cambiarlo en Inputs.
+const float LEVEL_HIGH_DEFAULT = 70.0 // [Aportado] Amplitud alta: más del 70 % de los valores sobre su media
+const float LEVEL_MID_DEFAULT = 50.0 // [Aportado] Línea neutra: la mitad de los valores
+const float LEVEL_LOW_DEFAULT = 30.0 // [Aportado] Amplitud baja: menos del 30 % de los valores sobre su media
+const int WINDOW_DEFAULT = 20 // [Propuesta] Ventana de comparación, en velas
+const color COLOR_S5FI = #1565C0 // Azul: % sobre la media de 50 sesiones
+const color COLOR_S5TH = #EF6C00 // Naranja: % sobre la media de 200 sesiones
+const string GRP_SYMBOLS = "Símbolos"
+const string GRP_LEVELS = "Niveles [Aportado]"
+const string GRP_DIVERGENCE = "Divergencia [Propuesta]"
+const string GRP_INFO = "Información"
+
+
+// ————— Inputs
+// Los símbolos van siempre por input: el plan del usuario puede no servirlos.
+string indexInput = input.symbol("SP:SPX", "Índice de referencia", group = GRP_SYMBOLS,
+ tooltip = "Índice con el que se compara la amplitud. Se lee por request.security: " +
+     "no hace falta tenerlo en el gráfico.")
+string s5fiInput = input.symbol("INDEX:S5FI", "% sobre media de 50 sesiones", group = GRP_SYMBOLS,
+ tooltip = "Porcentaje de valores del S&P 500 por encima de su media de 50 sesiones.")
+string s5thInput = input.symbol("INDEX:S5TH", "% sobre media de 200 sesiones", group = GRP_SYMBOLS,
+ tooltip = "Porcentaje de valores del S&P 500 por encima de su media de 200 sesiones.")
+
+float levelHighInput = input.float(LEVEL_HIGH_DEFAULT, "Nivel alto (%)", minval = 0.0, maxval = 100.0,
+ group = GRP_LEVELS,
+ tooltip = "[Aportado] Convención técnica, no de Cava. Por encima, la mayoría de valores acompaña la subida.")
+float levelMidInput = input.float(LEVEL_MID_DEFAULT, "Nivel neutro (%)", minval = 0.0, maxval = 100.0,
+ group = GRP_LEVELS, tooltip = "[Aportado] Convención técnica, no de Cava. Línea del 50 %: la mitad de los valores.")
+float levelLowInput = input.float(LEVEL_LOW_DEFAULT, "Nivel bajo (%)", minval = 0.0, maxval = 100.0,
+ group = GRP_LEVELS,
+ tooltip = "[Aportado] Convención técnica, no de Cava. Por debajo, la mayoría de valores no acompaña.")
+
+bool showDivInput = input.bool(true, "Marcar divergencias índice / amplitud", group = GRP_DIVERGENCE,
+ tooltip = "Dibuja un círculo rojo (bajista) o verde (alcista) en la primera vela de cada divergencia. " +
+     "No afecta a las alertas.")
+int windowInput = input.int(WINDOW_DEFAULT, "Ventana de comparación (velas)", minval = 2, maxval = 250,
+ group = GRP_DIVERGENCE,
+ tooltip = "[Propuesta] La fuente no la fija. Define qué es «máximo reciente» del índice y a cuántas velas " +
+     "atrás se compara la amplitud. 20 velas: unas 4 semanas en diario, unos 5 meses en semanal.")
+
+string infoInput = input.text_area("Amplitud del S&P 500: cuántos valores acompañan al índice. " +
+     "Círculo rojo: el índice hace máximos y la amplitud cae (se sube sin apoyo). " +
+     "Círculo verde: el índice hace mínimos y la amplitud mejora. Aviso de contexto, no señal de entrada.",
+ "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+// Los tres datos se leen en el marco del gráfico. Si falta alguno, no se calcula nada (datosOk).
+float s5fi = request.security(s5fiInput, timeframe.period, close, ignore_invalid_symbol = true)
+float s5th = request.security(s5thInput, timeframe.period, close, ignore_invalid_symbol = true)
+float indexClose = request.security(indexInput, timeframe.period, close, ignore_invalid_symbol = true)
+
+bool dataOk = not na(s5fi) and not na(s5th) and not na(indexClose)
+
+// Divergencia bajista: índice en máximos de la ventana y amplitud por debajo de donde estaba hace N velas.
+// Basta con que caiga UNA de las dos series (S5FI o S5TH).
+bool indexAtHigh = dataOk and indexClose >= ta.highest(indexClose, windowInput)
+bool breadthFalls = dataOk and (s5fi < s5fi[windowInput] or s5th < s5th[windowInput])
+bool bearishDiv = indexAtHigh and breadthFalls
+
+// Divergencia alcista: simétrica [Elaboración]. Basta con que suba UNA de las dos series.
+bool indexAtLow = dataOk and indexClose <= ta.lowest(indexClose, windowInput)
+bool breadthRises = dataOk and (s5fi > s5fi[windowInput] or s5th > s5th[windowInput])
+bool bullishDiv = indexAtLow and breadthRises
+
+// Solo la primera vela de cada episodio: cambio de estado, no estado.
+bool newBearishDiv = bearishDiv and not bearishDiv[1]
+bool newBullishDiv = bullishDiv and not bullishDiv[1]
+
+// Cruces de niveles de amplitud.
+bool s5fiLosesLow = ta.crossunder(s5fi, levelLowInput)
+bool s5fiBreaksHigh = ta.crossover(s5fi, levelHighInput)
+bool s5thLosesMid = ta.crossunder(s5th, levelMidInput)
+
+
+// ————— Visuals
+// Cada plot aparece en Settings > Style; su título no se cambia o se rompen las alertas.
+plot(s5fi, "S5FI · % sobre MM50", color = COLOR_S5FI, linewidth = 2)
+plot(s5th, "S5TH · % sobre MM200", color = COLOR_S5TH, linewidth = 2)
+
+highLine = hline(levelHighInput, "Nivel alto", color = color.gray, linestyle = hline.style_dashed)
+hline(levelMidInput, "Nivel neutro", color = color.gray, linestyle = hline.style_solid)
+lowLine = hline(levelLowInput, "Nivel bajo", color = color.gray, linestyle = hline.style_dashed)
+fill(highLine, lowLine, color = color.new(color.gray, 95))
+
+plotshape(showDivInput and newBearishDiv, "Divergencia bajista", style = shape.circle, location = location.top,
+ color = color.red, size = size.tiny)
+plotshape(showDivInput and newBullishDiv, "Divergencia alcista", style = shape.circle, location = location.bottom,
+ color = color.green, size = size.tiny)
+
+
+// ————— Alerts
+// Se alerta el cambio, no el estado. Nombre «PRENN Nombre · acción», en castellano.
+alertcondition(newBearishDiv, "GEN21 Amplitud · divergencia bajista",
+ "El índice marca máximos de la ventana pero la amplitud ha caído respecto a hace N velas: " +
+     "la subida pierde participación. [Propuesta]. Aviso de contexto, no señal de entrada.")
+alertcondition(newBullishDiv, "GEN21 Amplitud · divergencia alcista",
+ "El índice marca mínimos de la ventana pero la amplitud mejora: " +
+     "la caída pierde participación. [Propuesta]. Aviso de contexto, no señal de entrada.")
+alertcondition(s5fiLosesLow, "GEN21 Amplitud · S5FI pierde nivel bajo",
+ "El % de valores del S&P 500 sobre su media de 50 sesiones ha cruzado a la baja " +
+     "el nivel bajo (30 por defecto). [Aportado].")
+alertcondition(s5fiBreaksHigh, "GEN21 Amplitud · S5FI supera nivel alto",
+ "El % de valores del S&P 500 sobre su media de 50 sesiones ha cruzado al alza " +
+     "el nivel alto (70 por defecto). [Aportado].")
+alertcondition(s5thLosesMid, "GEN21 Amplitud · S5TH pierde nivel neutro",
+ "El % de valores del S&P 500 sobre su media de 200 sesiones ha cruzado a la baja " +
+     "el nivel neutro (50 por defecto). [Aportado].")

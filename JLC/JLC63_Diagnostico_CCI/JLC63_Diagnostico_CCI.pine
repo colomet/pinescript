@@ -1,0 +1,98 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC63 Diagnostic] CCI: 14 {threshold +/-50 in / 0 out}", shorttitle="JLC63 CCI", overlay=false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: CCI de Lambert de 14 periodos con el sistema de entrada y cancelación de Cava: entra cuando el CCI supera
+//   el umbral (50 por defecto) a favor de la tendencia y cancela cuando pierde el nivel cero.
+// Cómo se lee: triángulo verde = entrada larga (el CCI cruza al alza +umbral); cruz verde = cancela la larga (el CCI
+//   pierde el cero). Rojo = lo mismo en el lado corto, con -umbral. Banda gris entre los umbrales = zona neutra.
+//   Cada cancelación solo aparece si antes hubo una entrada del mismo lado.
+// Datos y marco: símbolo y marco del gráfico (la fuente usa 14 periodos en semanal, diario e intradiario). El
+//   selector «Tendencia dominante» no se calcula: lo fijas tú (p. ej. con el semáforo JLC41). Con INDEFINIDO déjalo en
+//   «Ambas» y trata las señales como información, no como permiso.
+// Fuente: José Luis Cava, El arte de especular, cap. VII. Fórmula y precio «significativo»: pp. 185-186. Umbral
+//   +50/-50, periodo 14 y señales condicionadas a la tendencia: VII.3.1, pp. 187-188. Cancelación al perder el cero y
+//   lado corto: pp. 190-191. Interpretación tradicional (entrada en sobreventa, giro y cero): VII.2, p. 187.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] constante 0,015 de Lambert: el libro imprime 0,15 en la fórmula y en el texto (pp. 185-186); 0,015 es
+//   el valor habitual de Lambert y hace que la mayoría de lecturas caigan entre +100 y -100.
+//   [Propuesta] estado de posición: solo cancela lo que antes entró y no duplica entradas; Cava lo enuncia como
+//   secuencia, el control de estado es del script.
+//   [Aportado] selector manual de tendencia dominante, que filtra qué señales se muestran.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Niveles y opciones del selector.
+// Nivel de cancelación: el CCI pierde el cero (Cava, VII.3.1, p. 190)
+float CCI_ZERO_LEVEL = 0
+// Constante de Lambert [Propuesta]: 0,015; el libro imprime 0,15 (pp. 185-186)
+float CCI_LAMBERT_CONSTANT = 0.015
+// Opciones del selector de tendencia dominante [Aportado]: filtra qué señales se muestran
+string TENDENCIA_ALCISTA = "Alcista"
+string TENDENCIA_BAJISTA = "Bajista"
+string TENDENCIA_AMBAS   = "Ambas"
+
+// ————— Inputs
+// Periodo, umbral y tendencia dominante.
+// Periodo 14 (Cava, VII.3.1, p. 187)
+int cciLengthInput = input.int(14, "Período CCI (n)", minval = 1)
+int umbralInput    = input.int(50, "Umbral sobrecompra/sobreventa (±)", minval = 1, tooltip = "Cava: 50 por defecto; usar 100 si la observación del producto lo justifica (p.187)")
+string tendenciaInput = input.string(TENDENCIA_AMBAS, "Tendencia dominante (filtra qué señales se muestran)", options = [TENDENCIA_ALCISTA, TENDENCIA_BAJISTA, TENDENCIA_AMBAS])
+
+// ————— Calculations
+// CCI = (precio significativo − SMA) / (0,015 · desviación media absoluta) (Cava, p. 185).
+src = hlc3  // precio "significativo" = (H+L+C)/3
+sma = ta.sma(src, cciLengthInput)
+md  = ta.dev(src, cciLengthInput)  // desviación media absoluta respecto a la SMA
+
+// Guarda de división por cero: con md = 0 (precio sin variación en todo el periodo) se arrastra el último valor
+// válido y en el primer dato se parte de 0 (equilibrio). No altera nada con md > 0.
+var float cci = na
+cci := md > 0 ? (src - sma) / (CCI_LAMBERT_CONSTANT * md) : nz(cci[1], 0.0)
+
+// Señales (Cava, VII.3.1, pp. 187-191). Cava lo enuncia como secuencia: entra al superar el umbral y cancela al perder
+// el cero. Por eso se lleva estado [Propuesta]: solo cancela lo que antes entró y no duplica la entrada.
+mostrarLargas = tendenciaInput == TENDENCIA_ALCISTA or tendenciaInput == TENDENCIA_AMBAS
+mostrarCortas = tendenciaInput == TENDENCIA_BAJISTA or tendenciaInput == TENDENCIA_AMBAS
+
+cruzaUmbralAlza  = ta.crossover(cci, umbralInput)
+cruzaUmbralBaja  = ta.crossunder(cci, -umbralInput)
+pierdeCero       = ta.crossunder(cci, CCI_ZERO_LEVEL)
+superaCero       = ta.crossover(cci, CCI_ZERO_LEVEL)
+
+var bool enLargo = false
+var bool enCorto = false
+
+entradaLarga = mostrarLargas and cruzaUmbralAlza and not enLargo
+cancelaLarga = enLargo and pierdeCero
+entradaCorta = mostrarCortas and cruzaUmbralBaja and not enCorto
+cancelaCorta = enCorto and superaCero
+
+if entradaLarga
+    enLargo := true
+if cancelaLarga
+    enLargo := false
+if entradaCorta
+    enCorto := true
+if cancelaCorta
+    enCorto := false
+
+// ————— Visuals
+// Línea del CCI, niveles y marcas de entrada y cancelación.
+plot(cci, "CCI", color = color.new(#7B1FA2, 0), linewidth = 2)
+
+hZero = hline(CCI_ZERO_LEVEL, "Cero (cancelación)", color = color.gray, linestyle = hline.style_solid)
+hUp   = hline(umbralInput, "Sobrecompra (+umbral)", color = color.gray, linestyle = hline.style_dashed)
+hDn   = hline(-umbralInput, "Sobreventa (−umbral)", color = color.gray, linestyle = hline.style_dashed)
+fill(hUp, hDn, color = color.new(color.gray, 92))
+
+plotshape(entradaLarga, title = "Entrada larga", style = shape.triangleup, location = location.bottom, color = color.new(color.green, 0), size = size.tiny)
+plotshape(cancelaLarga, title = "Cancela larga", style = shape.xcross, location = location.bottom, color = color.new(color.green, 40), size = size.tiny)
+plotshape(entradaCorta, title = "Entrada corta", style = shape.triangledown, location = location.top, color = color.new(color.red, 0), size = size.tiny)
+plotshape(cancelaCorta, title = "Cancela corta", style = shape.xcross, location = location.top, color = color.new(color.red, 40), size = size.tiny)

@@ -1,0 +1,98 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[GEN82 Pack] Stochastic and RSI", shorttitle = "GEN82 Stoch+RSI", overlay = false, precision = 2)
+
+// ————— About
+// Versión: 0.1.1.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: pack de dos indicadores en un solo panel: estocástico con %K suavizado y %D (categoría Diagnostic) y
+// RSI (categoría Diagnostic). Van juntos por decisión de uso: ver ciclo e impulso a la vez, con sus niveles,
+// sin ocupar dos paneles.
+// Cómo se lee: línea azul = %K; línea naranja = %D; línea morada = RSI. Líneas horizontales: 80 y 20
+// (estocástico, discontinuas), 70 y 30 (RSI, punteadas) y 50 (centro, continua). Colores por defecto, ajustables.
+// No hay señales ni alertas: los niveles solo se dibujan.
+// Datos y marco: gráfico actual, cualquier marco temporal. No pide símbolos externos.
+// Fuente: Pablo Gil, script «Estocástico + RSI Unificados». Estocástico 18-9-5 y RSI 14 sobre cierre: parámetros
+// atribuidos al autor, sin fuente que los fije. Cálculo con ta.stoch, ta.sma y ta.rsi de TradingView.
+// Créditos: adaptación de ese script; el código es propio y de Gil solo vienen los parámetros. Mejoras: estructura
+// del lote, ajustes con límites, títulos sin cifras fijas y niveles de 80 y 20 coherentes con el texto. El
+// cálculo es el del original.
+// Marcas: sin marca = regla de la fuente.
+// [Aportado] Estocástico 18-9-5 y RSI 14: de Pablo Gil, sin fuente que los fije. Niveles 80/20 y 70/30: usuales,
+// sin fuente que los fije en este script.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+
+// ————— Constants
+const int STOCH_LEN_DEFAULT = 18 // [Aportado] velas del rango del estocástico
+const int STOCH_K_SMOOTH_DEFAULT = 9 // [Aportado] suavizado de %K
+const int STOCH_D_SMOOTH_DEFAULT = 5 // [Aportado] media de %D
+const int RSI_LEN_DEFAULT = 14 // [Aportado] periodo del RSI
+const float STOCH_HIGH = 80.0 // Nivel alto del estocástico
+const float STOCH_LOW = 20.0 // Nivel bajo del estocástico
+const float RSI_HIGH = 70.0 // Nivel alto del RSI
+const float RSI_LOW = 30.0 // Nivel bajo del RSI
+const float MID_LEVEL = 50.0 // Centro del panel
+const color COLOR_K = #1E88E5 // Línea %K
+const color COLOR_D = #FF6D00 // Línea %D
+const color COLOR_RSI = #7B1FA2 // Línea del RSI
+const string GRP_STOCH = "Estocástico" // Ajustes del estocástico
+const string GRP_RSI = "RSI" // Ajustes del RSI
+const string GRP_LOOK = "Aspecto" // Ajustes que solo cambian el dibujo
+const string GRP_INFO = "Info" // Bloque informativo
+
+
+// ————— Inputs
+int stochLenInput = input.int(STOCH_LEN_DEFAULT, "%K longitud (velas)", minval = 1, maxval = 500, group = GRP_STOCH,
+ tooltip = "Velas del rango (máximo y mínimo) sobre el que se mide el cierre. Con 18: 18 sesiones en diario, " +
+ "18 semanas en semanal. Menos velas, más nervioso; más velas, más suave.")
+
+int stochKSmoothInput = input.int(STOCH_K_SMOOTH_DEFAULT, "%K suavizado (velas)", minval = 1, maxval = 200,
+ group = GRP_STOCH,
+ tooltip = "Media simple que suaviza la línea %K. Con 1 no se suaviza.")
+
+int stochDSmoothInput = input.int(STOCH_D_SMOOTH_DEFAULT, "%D suavizado (velas)", minval = 1, maxval = 200,
+ group = GRP_STOCH,
+ tooltip = "Media simple de %K que da la línea de señal %D.")
+
+int rsiLenInput = input.int(RSI_LEN_DEFAULT, "Periodo RSI (velas)", minval = 1, maxval = 500, group = GRP_RSI,
+ tooltip = "Velas del RSI. Con 14: 14 sesiones en diario, 14 semanas en semanal. Menos velas, más nervioso; " +
+ "más velas, más suave.")
+
+float rsiSourceInput = input.source(close, "Fuente RSI", group = GRP_RSI,
+ tooltip = "Serie sobre la que se calcula el RSI. Por defecto el cierre.")
+
+// Colores. Sin «inline»: un solo ajuste por fila.
+color kColorInput = input.color(COLOR_K, "Color línea %K", group = GRP_LOOK)
+color dColorInput = input.color(COLOR_D, "Color línea %D", group = GRP_LOOK)
+color rsiColorInput = input.color(COLOR_RSI, "Color línea RSI", group = GRP_LOOK)
+
+// Ficha de solo lectura («active = false»).
+string infoInput = input.text_area("Estocástico y RSI en un solo panel, con sus niveles. Sin señales ni alertas.",
+ "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+// Estocástico: %K básico con ta.stoch, suavizado con media simple; %D es media simple de %K. Como el original.
+float stochRaw = ta.stoch(close, high, low, stochLenInput)
+float stochK = ta.sma(stochRaw, stochKSmoothInput)
+float stochD = ta.sma(stochK, stochDSmoothInput)
+
+// RSI estándar de TradingView.
+float rsiValue = ta.rsi(rsiSourceInput, rsiLenInput)
+
+
+// ————— Visuals
+// Niveles de lectura rápida. Cada plot aparece en Settings > Style. Títulos sin cifras fijas: los parámetros
+// son ajustables.
+hline(STOCH_HIGH, "Estocástico alto", color = color.new(color.red, 50), linestyle = hline.style_dashed)
+hline(RSI_HIGH, "RSI alto", color = color.new(color.purple, 60), linestyle = hline.style_dotted)
+hline(MID_LEVEL, "Centro", color = color.new(color.gray, 50), linestyle = hline.style_solid)
+hline(RSI_LOW, "RSI bajo", color = color.new(color.purple, 60), linestyle = hline.style_dotted)
+hline(STOCH_LOW, "Estocástico bajo", color = color.new(color.green, 50), linestyle = hline.style_dashed)
+
+plot(stochK, "Estocástico %K", color = kColorInput, linewidth = 1)
+plot(stochD, "Estocástico %D", color = dColorInput, linewidth = 1)
+plot(rsiValue, "RSI", color = rsiColorInput, linewidth = 1)

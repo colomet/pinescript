@@ -1,0 +1,142 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC41 Trend] Traffic light: monthly MACD + weekly MACD + weekly stochastic {60/40}", shorttitle="JLC41 Trend light", overlay=true)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: semáforo de tendencia con las tres condiciones de Cava: MACD mensual, MACD semanal y estocástico semanal.
+//   Muestra el estado (ALCISTA, BAJISTA o INDEFINIDO) en una tabla y en el color del fondo.
+// Cómo se lee: ALCISTA = MACD mensual cortado al alza, línea rápida del MACD semanal sobre cero y línea rápida del
+//   estocástico semanal sobre 60. BAJISTA = lo contrario, con el estocástico bajo 40. INDEFINIDO = las tres
+//   condiciones no concuerdan: no es un fallo de lectura, la fuente no define tendencia en ese caso.
+// Datos y marco: símbolo del gráfico, pensado para el diario. Lee por su cuenta los marcos mensual y semanal, que
+//   fija la fuente. Por defecto solo usa barras cerradas (no cambia a posteriori); sin esa opción muestra la barra
+//   en curso, que puede variar hasta el cierre.
+// Fuente: José Luis Cava, El arte de especular, cap. I.5.3 «Definición de tendencia empleando el MACD mensual y
+//   semanal», p. 37 (paráfrasis); MACD 12/26/9, cap. IV.1 «El MACD: Definición», p. 101; «cortado al alza» como
+//   línea rápida sobre la lenta, cap. IV.2.2 «Cruces», p. 103; estocástico de 14 periodos, cap. V.1.1, p. 141.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Aportado] contador de condiciones a favor de cada lado (columna de la tabla): informativo, no es de la fuente.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Umbrales del estocástico semanal (Cava, I.5.3, p. 37)
+float STOCH_NIVEL_ALCISTA = 60
+float STOCH_NIVEL_BAJISTA = 40
+float MACD_NIVEL_CERO     = 0
+// Marcos fijados por la fuente (Cava, I.5.3, p. 37): no son preferencia del usuario
+string TF_MENSUAL = "M"
+string TF_SEMANAL = "W"
+
+// Estados posibles del semáforo.
+string ESTADO_ALCISTA    = "ALCISTA"
+string ESTADO_BAJISTA    = "BAJISTA"
+string ESTADO_INDEFINIDO = "INDEFINIDO"
+
+// ————— Inputs
+// Todo lo que el usuario puede ajustar, agrupado por bloque.
+bool soloBarrasCerradasInput = input.bool(true, "Leer solo barras semanales/mensuales cerradas", tooltip = "Activado: el estado no cambia a posteriori. Desactivado: muestra la barra en curso, que puede variar hasta su cierre.")
+int macdFastInput   = input.int(12, "MACD rápido", minval = 1, group = "MACD (EA IV.1)")
+int macdSlowInput   = input.int(26, "MACD lento", minval = 1, group = "MACD (EA IV.1)")
+int macdSignalInput = input.int(9, "MACD señal", minval = 1, group = "MACD (EA IV.1)")
+int stochLenInput   = input.int(14, "Estocástico %K (n)", minval = 1, group = "Estocástico (EA V.1.1)")
+bool mostrarTablaInput = input.bool(true, "Mostrar tabla de estado", group = "Presentación")
+bool colorearFondoInput = input.bool(true, "Colorear el fondo según el estado", group = "Presentación")
+string posicionInput = input.string("Superior derecha", "Posición de la tabla", options = ["Superior derecha", "Superior izquierda", "Inferior derecha", "Inferior izquierda"], group = "Presentación")
+
+// ————— Function declarations
+// El desplazamiento para leer la barra cerrada va dentro de la función: Pine no admite el operador de historial
+// sobre el resultado de una llamada ni sobre la tupla de ta.macd().
+f_macd(int fast, int slow, int sig, int d) =>
+    [m, s, h] = ta.macd(close, fast, slow, sig)
+    [m[d], s[d], h[d]]
+
+// %K del estocástico sin suavizar (Cava, V.1.1, p. 141), con guarda de división por cero: se arrastra el último
+// valor válido y arranca neutro en 50.
+f_stochK(int len, int d) =>
+    hh = ta.highest(high, len)
+    ll = ta.lowest(low, len)
+    rango = hh - ll
+    var float k = na
+    k := rango > 0 ? 100 * (close - ll) / rango : nz(k[1], 50.0)
+    k[d]
+
+// ————— Calculations
+// Todo se lee con el mismo desplazamiento: 1 = última barra cerrada, 0 = barra en curso.
+d = soloBarrasCerradasInput ? 1 : 0
+
+// MACD mensual: «cortado al alza» = línea rápida sobre la de señal (Cava, IV.2.2, p. 103)
+[macdM, signalM, _mh] = request.security(syminfo.tickerid, TF_MENSUAL, f_macd(macdFastInput, macdSlowInput, macdSignalInput, d), lookahead = barmerge.lookahead_off)
+
+// MACD semanal: la línea rápida se compara con el nivel cero (Cava, I.5.3, p. 37)
+[macdW, _sw, _wh] = request.security(syminfo.tickerid, TF_SEMANAL, f_macd(macdFastInput, macdSlowInput, macdSignalInput, d), lookahead = barmerge.lookahead_off)
+
+// Estocástico semanal: línea rápida %K (Cava, V.1.1, p. 141)
+stochW = request.security(syminfo.tickerid, TF_SEMANAL, f_stochK(stochLenInput, d), lookahead = barmerge.lookahead_off)
+
+// Las tres condiciones de la fuente (Cava, I.5.3, p. 37)
+c1Alcista = macdM > signalM
+c2Alcista = macdW > MACD_NIVEL_CERO
+c3Alcista = stochW > STOCH_NIVEL_ALCISTA
+
+c1Bajista = macdM < signalM
+c2Bajista = macdW < MACD_NIVEL_CERO
+c3Bajista = stochW < STOCH_NIVEL_BAJISTA
+
+esAlcista = c1Alcista and c2Alcista and c3Alcista
+esBajista = c1Bajista and c2Bajista and c3Bajista
+
+// Indefinido: las tres condiciones no concuerdan; la fuente no define tendencia ahí y el script tampoco
+estado = esAlcista ? ESTADO_ALCISTA : esBajista ? ESTADO_BAJISTA : ESTADO_INDEFINIDO
+
+// [Aportado]: cuántas condiciones apuntan a cada lado (solo informativo)
+nAlcistas = (c1Alcista ? 1 : 0) + (c2Alcista ? 1 : 0) + (c3Alcista ? 1 : 0)
+nBajistas = (c1Bajista ? 1 : 0) + (c2Bajista ? 1 : 0) + (c3Bajista ? 1 : 0)
+
+cambioEstado = estado != estado[1]
+
+// ————— Visuals
+// Fondo de color y tabla de estado en la última barra.
+colAlcista = color.new(#2E7D32, 0)
+colBajista = color.new(#C62828, 0)
+colNeutro  = color.new(#616161, 0)
+colEstado  = esAlcista ? colAlcista : esBajista ? colBajista : colNeutro
+
+bgcolor(colorearFondoInput ? (esAlcista ? color.new(#2E7D32, 92) : esBajista ? color.new(#C62828, 92) : na) : na, title = "Estado del semáforo")
+
+// La posición se resuelve con una expresión ternaria sobre el input, no con una función: table.new espera un
+// valor constante o simple y una función definida por el usuario devuelve series.
+posTabla = posicionInput == "Superior derecha" ? position.top_right : posicionInput == "Superior izquierda" ? position.top_left : posicionInput == "Inferior derecha" ? position.bottom_right : position.bottom_left
+
+var table t = table.new(posTabla, 3, 5, border_width = 1)
+
+if mostrarTablaInput and barstate.islast
+    table.cell(t, 0, 0, "TENDENCIA", text_color = color.white, bgcolor = colEstado, text_size = size.small)
+    table.cell(t, 1, 0, estado, text_color = color.white, bgcolor = colEstado, text_size = size.small)
+    table.cell(t, 2, 0, str.tostring(nAlcistas) + "↑ / " + str.tostring(nBajistas) + "↓", text_color = color.white, bgcolor = colEstado, text_size = size.small)
+
+    table.cell(t, 0, 1, "MACD mensual", text_size = size.tiny)
+    table.cell(t, 1, 1, macdM > signalM ? "cortado al alza" : "cortado a la baja", text_size = size.tiny)
+    table.cell(t, 2, 1, c1Alcista ? "↑" : "↓", text_color = color.white, bgcolor = c1Alcista ? colAlcista : colBajista, text_size = size.tiny)
+
+    table.cell(t, 0, 2, "MACD semanal", text_size = size.tiny)
+    table.cell(t, 1, 2, str.tostring(macdW, format.mintick) + (c2Alcista ? " (>0)" : " (<0)"), text_size = size.tiny)
+    table.cell(t, 2, 2, c2Alcista ? "↑" : "↓", text_color = color.white, bgcolor = c2Alcista ? colAlcista : colBajista, text_size = size.tiny)
+
+    table.cell(t, 0, 3, "Estocástico %K sem.", text_size = size.tiny)
+    table.cell(t, 1, 3, str.tostring(stochW, "#.0") + (c3Alcista ? " (>60)" : c3Bajista ? " (<40)" : " (40-60)"), text_size = size.tiny)
+    table.cell(t, 2, 3, c3Alcista ? "↑" : c3Bajista ? "↓" : "–", text_color = color.white, bgcolor = c3Alcista ? colAlcista : c3Bajista ? colBajista : colNeutro, text_size = size.tiny)
+
+    table.cell(t, 0, 4, soloBarrasCerradasInput ? "Barras cerradas" : "Barra en curso", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 4, "EA I.5.3 p.37", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 2, 4, "", text_size = size.tiny)
+
+// ————— Alerts
+// Avisan del cambio de estado.
+alertcondition(cambioEstado and esAlcista, "JLC41 Semáforo · pasa a ALCISTA", "Las tres condiciones de EA I.5.3 se alinean al alza: MACD mensual cortado al alza, MACD semanal sobre cero y estocástico %K semanal sobre 60.")
+alertcondition(cambioEstado and esBajista, "JLC41 Semáforo · pasa a BAJISTA", "Las tres condiciones de EA I.5.3 se alinean a la baja: MACD mensual cortado a la baja, MACD semanal bajo cero y estocástico %K semanal bajo 40.")
+alertcondition(cambioEstado and not esAlcista and not esBajista, "JLC41 Semáforo · pasa a INDEFINIDO", "Las tres condiciones de EA I.5.3 han dejado de concordar. El sistema no define sentido de tendencia.")

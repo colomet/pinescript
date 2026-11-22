@@ -1,0 +1,198 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC82 Pack] Momentum: stochastic + ADX/DI + CCI", shorttitle="JLC82 Momentum", overlay=false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: pack de momento en un solo panel y un solo slot: estocástico (%K sin suavizar y %D), ADX con +DI y -DI, y
+//   CCI reescalado. Reúne tal cual las reglas de JLC62, JLC51 y JLC63, que siguen existiendo sin tocar; cada bloque se
+//   puede apagar por separado.
+// Cómo se lee: estocástico con niveles 80/60/40/20; ADX y DI con la mejor señal (triángulo) y la regla de Elder
+//   (círculo); CCI con entrada (triángulo morado) y cancelación (cruz). Ojo con la escala: estocástico y ADX son 0-100,
+//   pero el CCI no tiene techo ni suelo y se reescala solo para dibujarlo: cciVisual = 50 + 50 · CCI / escala (200 por
+//   defecto; con ese valor el umbral +/-50 queda dibujado en 62,5 y 37,5). Las señales del CCI se calculan siempre
+//   sobre el CCI real. Para leer niveles de CCI con precisión usa JLC63; para ver la coincidencia de los tres, este
+//   pack.
+// Datos y marco: símbolo y marco del gráfico. El selector «Tendencia dominante» filtra las señales del CCI y no se
+//   calcula: lo fijas tú (p. ej. con el semáforo JLC41).
+// Fuente: José Luis Cava, El arte de especular. Estocástico: cap. V, pp. 141-143 (14 periodos, %D como razón de sumas
+//   de 3, niveles 80/20) y cap. I.5.3, p. 37 (niveles 60/40). ADX/DI: cap. VIII.6.1, p. 208; mejor señal
+//   VIII.6.2-VIII.6.3, pp. 209-211; regla de Elder, p. 213; niveles VIII.6.5, p. 215. CCI: cap. VII, pp. 185-191
+//   (umbral +/-50 y cancelación al perder el cero, VII.3.1). El detalle de cada cita está en JLC62, JLC51 y JLC63.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente. [Propuesta] caducidad de la condición previa del ADX (60 barras o ADX sobre
+//   30); constante 0,015 del CCI (el libro imprime 0,15); estado de posición del CCI (solo cancela lo que antes entró).
+//   [Aportado] reescalado visual del CCI y selector manual de tendencia.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Niveles de las tres familias; 80/20 y 60/40 del estocástico, 40/30/20 del ADX (Cava, V.1.2 p. 143; I.5.3 p. 37;
+// VIII.6.5 p. 215)
+float NIVEL_80 = 80
+float NIVEL_60 = 60
+float NIVEL_50 = 50
+float NIVEL_40 = 40
+float NIVEL_30 = 30
+float NIVEL_20 = 20
+// Constante de Lambert [Propuesta]: 0,015; el libro imprime 0,15 (pp. 185-186)
+float CCI_LAMBERT_CONSTANT = 0.015
+float CCI_ZERO_LEVEL = 0
+// Regla de Elder: subida del ADX de 4 a 12 puntos desde su mínimo (Cava, p. 213)
+int ELDER_RISE_MIN = 4
+int ELDER_RISE_MAX = 12
+
+// Opciones del selector de tendencia [Aportado]
+string TENDENCIA_ALCISTA = "Alcista"
+string TENDENCIA_BAJISTA = "Bajista"
+string TENDENCIA_AMBAS   = "Ambas"
+
+string GRP_STOCH = "Estocástico (EA V)"
+string GRP_ADX   = "ADX / DI (EA VIII)"
+string GRP_CCI   = "CCI (EA VII)"
+
+// ————— Inputs
+// Un bloque por indicador, cada uno con su interruptor.
+bool verStochInput = input.bool(true, "Mostrar estocástico", group = GRP_STOCH)
+int kLengthInput = input.int(14, "Período %K (n)", minval = 1, group = GRP_STOCH)
+int dLengthInput = input.int(3, "Período %D (suma, no SMA)", minval = 1, group = GRP_STOCH)
+
+bool verAdxInput = input.bool(true, "Mostrar ADX y DI", group = GRP_ADX)
+int adxLenInput = input.int(14, "Período ADX/DI (n)", minval = 1, group = GRP_ADX)
+int caducidadInput = input.int(60, "[Propuesta] Caducidad de la condición previa (barras)", minval = 1, group = GRP_ADX)
+bool desarmarPorNivelInput = input.bool(true, "Desarmar si el ADX supera 30 sin disparar", group = GRP_ADX)
+
+bool verCciInput = input.bool(true, "Mostrar CCI (reescalado)", group = GRP_CCI)
+int cciLengthInput = input.int(14, "Período CCI (n)", minval = 1, group = GRP_CCI)
+int umbralInput = input.int(50, "Umbral sobrecompra/sobreventa (±)", minval = 1, group = GRP_CCI)
+float cciEscalaInput = input.float(200, "[Aportado] Escala de reescalado visual del CCI", minval = 10, step = 10, tooltip = "Solo afecta al dibujo. Las señales se calculan sobre el CCI real.", group = GRP_CCI)
+string tendenciaInput = input.string(TENDENCIA_AMBAS, "Tendencia dominante (filtra señales del CCI)", options = [TENDENCIA_ALCISTA, TENDENCIA_BAJISTA, TENDENCIA_AMBAS], group = GRP_CCI)
+
+// ————— Calculations
+// Estocástico: %K sin suavizar y %D como razón de sumas de 3 periodos (Cava, pp. 142-143), guarda de división por cero
+hh = ta.highest(high, kLengthInput)
+ll = ta.lowest(low, kLengthInput)
+rango = hh - ll
+
+var float rawK = na
+rawK := rango > 0 ? 100 * (close - ll) / rango : nz(rawK[1], 50.0)
+
+numSum = math.sum(close - ll, dLengthInput)
+denSum = math.sum(hh - ll, dLengthInput)
+var float dLine = na
+dLine := denSum > 0 ? 100 * numSum / denSum : nz(dLine[1], 50.0)
+
+// ADX y DI (Cava, VIII.6.2, p. 209): condición previa = ADX bajo ambos DI y bajo 20; caduca [Propuesta]
+[diplus, diminus, adx] = ta.dmi(adxLenInput, adxLenInput)
+
+diplusSube  = diplus > diplus[1]
+diplusBaja  = diplus < diplus[1]
+diminusSube = diminus > diminus[1]
+diminusBaja = diminus < diminus[1]
+adxBajoAmbosDI = adx < diplus and adx < diminus
+
+var bool estuvoBajoAmbos = false
+var int  barraCondicion  = na
+if adxBajoAmbosDI and adx < NIVEL_20
+    estuvoBajoAmbos := true
+    barraCondicion  := bar_index
+
+caducada = estuvoBajoAmbos and (bar_index - nz(barraCondicion, bar_index) > caducidadInput or (desarmarPorNivelInput and adx > NIVEL_30))
+if caducada
+    estuvoBajoAmbos := false
+
+condCompra = estuvoBajoAmbos and diplus > diminus and ta.crossover(adx, diminus) and diplusSube and diminusBaja
+condVenta  = estuvoBajoAmbos and diminus > diplus and ta.crossover(adx, diplus) and diminusSube and diplusBaja
+if condCompra or condVenta
+    estuvoBajoAmbos := false
+
+// Regla de Elder (Cava, p. 213): una sola vez, al subir 4 puntos desde el mínimo, tras haber estado bajo los DI
+var bool estuvoBajoDIs = false
+if adxBajoAmbosDI
+    estuvoBajoDIs := true
+var float adxMin = adx
+if adx < adx[1]
+    adxMin := adx
+subidaDesdeMinimo = adx - adxMin
+elderSignal = estuvoBajoDIs and adx > adx[1] and ta.crossover(subidaDesdeMinimo, float(ELDER_RISE_MIN)) and subidaDesdeMinimo <= ELDER_RISE_MAX
+if elderSignal
+    estuvoBajoDIs := false
+
+// CCI (Cava, VII, pp. 185-191) con entrada al superar el umbral y cancelación al perder el cero, con estado [Propuesta]
+src = hlc3
+smaSrc = ta.sma(src, cciLengthInput)
+md = ta.dev(src, cciLengthInput)
+var float cci = na
+cci := md > 0 ? (src - smaSrc) / (CCI_LAMBERT_CONSTANT * md) : nz(cci[1], 0.0)
+
+mostrarLargas = tendenciaInput == TENDENCIA_ALCISTA or tendenciaInput == TENDENCIA_AMBAS
+mostrarCortas = tendenciaInput == TENDENCIA_BAJISTA or tendenciaInput == TENDENCIA_AMBAS
+
+cruzaUmbralAlza = ta.crossover(cci, umbralInput)
+cruzaUmbralBaja = ta.crossunder(cci, -umbralInput)
+pierdeCero = ta.crossunder(cci, CCI_ZERO_LEVEL)
+superaCero = ta.crossover(cci, CCI_ZERO_LEVEL)
+
+var bool enLargo = false
+var bool enCorto = false
+entradaLarga = mostrarLargas and cruzaUmbralAlza and not enLargo
+cancelaLarga = enLargo and pierdeCero
+entradaCorta = mostrarCortas and cruzaUmbralBaja and not enCorto
+cancelaCorta = enCorto and superaCero
+if entradaLarga
+    enLargo := true
+if cancelaLarga
+    enLargo := false
+if entradaCorta
+    enCorto := true
+if cancelaCorta
+    enCorto := false
+
+// [Aportado] reescalado visual del CCI a la banda 0-100 del panel; no afecta a las señales
+f_cciVisual(float v) => NIVEL_50 + NIVEL_50 * v / cciEscalaInput
+cciVisual = f_cciVisual(cci)
+cciUmbralSup = f_cciVisual(umbralInput)
+cciUmbralInf = f_cciVisual(-umbralInput)
+cciCero = f_cciVisual(CCI_ZERO_LEVEL)
+
+// ————— Visuals
+// Líneas, niveles y marcas de cada bloque.
+plot(verStochInput ? rawK : na, "%K", color = color.new(#2962FF, 0), linewidth = 2)
+plot(verStochInput ? dLine : na, "%D", color = color.new(#FF6D00, 0), linewidth = 1)
+
+plot(verAdxInput ? adx : na, "ADX", color = color.new(#2E7D32, 0), linewidth = 2)
+plot(verAdxInput ? diplus : na, "+DI", color = color.new(#1565C0, 40), linewidth = 1)
+plot(verAdxInput ? diminus : na, "-DI", color = color.new(#C62828, 40), linewidth = 1)
+
+plot(verCciInput ? cciVisual : na, "CCI (reescalado)", color = color.new(#7B1FA2, 0), linewidth = 2)
+plot(verCciInput ? cciUmbralSup : na, "CCI +umbral", color = color.new(#7B1FA2, 75), linewidth = 1, style = plot.style_stepline)
+plot(verCciInput ? cciUmbralInf : na, "CCI −umbral", color = color.new(#7B1FA2, 75), linewidth = 1, style = plot.style_stepline)
+plot(verCciInput ? cciCero : na, "CCI cero", color = color.new(#7B1FA2, 85), linewidth = 1, style = plot.style_stepline)
+
+h80 = hline(NIVEL_80, "80 · sobrecompra", color = color.gray, linestyle = hline.style_solid)
+h60 = hline(NIVEL_60, "60 · tendencia alcista", color = color.gray, linestyle = hline.style_dashed)
+h40 = hline(NIVEL_40, "40 · tendencia bajista", color = color.gray, linestyle = hline.style_dashed)
+h20 = hline(NIVEL_20, "20 · sobreventa / ADX bajo", color = color.gray, linestyle = hline.style_solid)
+h30 = hline(NIVEL_30, "30 · ADX tendencia fuerte", color = color.new(color.gray, 50), linestyle = hline.style_dotted)
+fill(h80, h20, color = color.new(color.gray, 95))
+
+plotshape(verAdxInput and condCompra, title = "ADX · mejor señal de compra (VIII.6.2)", style = shape.triangleup, location = location.bottom, color = color.new(color.green, 0), size = size.small)
+plotshape(verAdxInput and condVenta, title = "ADX · mejor señal de venta (VIII.6.2)", style = shape.triangledown, location = location.top, color = color.new(color.red, 0), size = size.small)
+plotshape(verAdxInput and elderSignal, title = "ADX · giro de Elder (4-12 pts)", style = shape.circle, location = location.bottom, color = color.new(color.orange, 0), size = size.tiny)
+
+plotshape(verCciInput and entradaLarga, title = "CCI · entrada larga", style = shape.triangleup, location = location.top, color = color.new(#7B1FA2, 0), size = size.tiny)
+plotshape(verCciInput and cancelaLarga, title = "CCI · cancela larga", style = shape.xcross, location = location.top, color = color.new(#7B1FA2, 40), size = size.tiny)
+plotshape(verCciInput and entradaCorta, title = "CCI · entrada corta", style = shape.triangledown, location = location.bottom, color = color.new(#7B1FA2, 0), size = size.tiny)
+plotshape(verCciInput and cancelaCorta, title = "CCI · cancela corta", style = shape.xcross, location = location.bottom, color = color.new(#7B1FA2, 40), size = size.tiny)
+
+// ————— Alerts
+// ADX, CCI y salida de sobrecompra y sobreventa del estocástico.
+alertcondition(condCompra, "JLC82 ADX · mejor señal de compra", "ADX: se cumple la señal de EA VIII.6.2. El ADX venía bajo ambos DI con lecturas inferiores a 20 y ha superado al DI más débil, con el DI dominante al alza.")
+alertcondition(condVenta, "JLC82 ADX · mejor señal de venta", "ADX: señal simétrica de EA VIII.6.2 en el lado bajista.")
+alertcondition(elderSignal, "JLC82 ADX · giro de Elder", "El ADX ha subido 4 puntos desde su mínimo tras estar por debajo de los DI. Aviso temprano de nueva tendencia.")
+alertcondition(entradaLarga, "JLC82 CCI · entrada larga", "El CCI ha cruzado al alza el umbral de sobrecompra con la tendencia dominante marcada como alcista (EA VII.3).")
+alertcondition(cancelaLarga, "JLC82 CCI · cancela larga", "El CCI ha perdido el nivel cero tras haber entrado en sobrecompra. Cancelación según EA VII.3.")
+alertcondition(ta.crossunder(rawK, NIVEL_80), "JLC82 Estocástico · sale de sobrecompra", "La línea rápida %K ha perdido el nivel 80.")
+alertcondition(ta.crossover(rawK, NIVEL_20), "JLC82 Estocástico · sale de sobreventa", "La línea rápida %K ha superado el nivel 20.")

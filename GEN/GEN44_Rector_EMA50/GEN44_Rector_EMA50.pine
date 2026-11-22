@@ -1,0 +1,98 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator(title = "[GEN44 Trend] EMA 50 + smoothing", shorttitle = "GEN44 EMA 50", overlay = true,
+     timeframe = "", timeframe_gaps = true)
+
+// ————— About
+// Versión: 0.1.1.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: media móvil exponencial (EMA) del precio con longitud por defecto de 50 velas. Sirve como referencia
+// visual de la tendencia de medio plazo. Trae un bloque opcional de suavizado (otra media sobre la EMA, con
+// bandas de Bollinger si se elige). No genera señales ni alertas.
+// Cómo se lee: línea azul = EMA de 50 velas. Línea amarilla (solo con suavizado) = media del tipo elegido
+// calculada sobre la propia EMA. Bandas verdes con relleno (solo con «SMA + Bandas de Bollinger») = la media de
+// suavizado más y menos la desviación típica de la EMA por el multiplicador; miden cuánto ha variado la EMA,
+// no la dispersión del precio.
+// Datos y marco: gráfico actual, cualquier marco temporal. No pide símbolos externos.
+// Fuente: TradingView, indicador integrado «Moving Average Exponential» (plantilla oficial, dominio público).
+// El periodo 50 no tiene fuente confirmada.
+// Créditos: base de TradingView sin cambios de cálculo; el periodo por defecto pasa a 50, y se han añadido la
+// interfaz en castellano y los comentarios.
+// Marcas: sin marca = plantilla de TradingView.
+// [Aportado] periodo 50 por defecto: sin fuente confirmada.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+
+// ————— Constants
+// Valores por defecto de la plantilla de TradingView, salvo la longitud de la EMA.
+const int EMA_LENGTH_DEFAULT = 50 // [Aportado] periodo 50, sin fuente confirmada
+const int SMOOTH_LENGTH_DEFAULT = 14 // Longitud del suavizado: valor de la plantilla de TradingView
+const float BB_MULT_DEFAULT = 2.0 // Multiplicador de las bandas: valor de la plantilla de TradingView
+const string GRUPO_SUAVIZADO = "Suavizado" // Grupo de ajustes del suavizado
+const string MA_NINGUNA = "Ninguna" // Opción sin suavizado
+const string MA_SMA_BB = "SMA + Bandas de Bollinger" // Opción con bandas
+const string TT_BB = "Solo se aplica con «SMA + Bandas de Bollinger». Distancia entre la media y cada banda, " +
+     "en desviaciones típicas de la EMA."
+
+
+// ————— Inputs
+int lenInput = input.int(EMA_LENGTH_DEFAULT, "Longitud", minval = 1,
+     tooltip = "Velas de la EMA. Más velas: línea más lenta y suave. 50 velas: unas 10 semanas en diario.")
+float srcInput = input.source(close, "Fuente",
+     tooltip = "Precio sobre el que se calcula la EMA. Por defecto: cierre.")
+int offsetInput = input.int(0, "Desplazamiento", minval = -500, maxval = 500, display = display.none,
+     tooltip = "Velas que se desplaza la línea de la EMA. No desplaza el suavizado ni las bandas.")
+
+string maTypeInput = input.string(MA_NINGUNA, "Tipo", group = GRUPO_SUAVIZADO, display = display.none,
+     options = [MA_NINGUNA, "SMA", MA_SMA_BB, "EMA", "SMMA (RMA)", "WMA", "VWMA"],
+     tooltip = "Media que se calcula sobre la EMA para suavizarla. «Ninguna» la desactiva.")
+bool isBB = maTypeInput == MA_SMA_BB
+bool enableMA = maTypeInput != MA_NINGUNA
+int maLengthInput = input.int(SMOOTH_LENGTH_DEFAULT, "Longitud", minval = 1, group = GRUPO_SUAVIZADO,
+     display = display.none, active = enableMA,
+     tooltip = "Velas de la media de suavizado. Solo se aplica si el tipo no es «Ninguna».")
+float bbMultInput = input.float(BB_MULT_DEFAULT, "Multiplicador de bandas", minval = 0.001, maxval = 50,
+     step = 0.5, tooltip = TT_BB, group = GRUPO_SUAVIZADO, display = display.none, active = isBB)
+
+string fichaInput = input.text_area("EMA del precio con suavizado opcional. Referencia de tendencia, sin señales. " +
+     "Base: indicador integrado de TradingView; periodo 50 sin fuente confirmada.", "Ficha", active = false)
+
+
+// ————— Function declarations
+//@function Media del tipo elegido sobre la serie indicada. «Ninguna» devuelve na.
+//@param source Serie sobre la que se calcula.
+//@param length Número de velas.
+//@param maType Tipo de media: una de las opciones del input «Tipo».
+//@returns Valor de la media en la vela actual.
+ma(float source, int length, string maType) =>
+    switch maType
+        "SMA"        => ta.sma(source, length)
+        MA_SMA_BB    => ta.sma(source, length) // Las bandas se calculan alrededor de una SMA
+        "EMA"        => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA"        => ta.wma(source, length)
+        "VWMA"       => ta.vwma(source, length)
+
+
+// ————— Calculations
+// EMA del precio elegido: cálculo de la plantilla de TradingView.
+float out = ta.ema(srcInput, lenInput)
+
+// Media de suavizado sobre la EMA, solo si se ha elegido un tipo; sin tipo queda en na y no se dibuja.
+float smoothingMA = enableMA ? ma(out, maLengthInput, maTypeInput) : na
+// Desviación típica de la EMA (no del precio) por el multiplicador: ancho de cada banda.
+float smoothingStDev = isBB ? ta.stdev(out, maLengthInput) * bbMultInput : na
+
+
+// ————— Visuals
+plot(out, title = "EMA", color = color.blue, offset = offsetInput)
+plot(smoothingMA, "Media sobre la EMA", color = color.yellow, display = enableMA ? display.all : display.none,
+     editable = enableMA)
+bbUpperBand = plot(smoothingMA + smoothingStDev, title = "Banda superior", color = color.green,
+     display = isBB ? display.all : display.none, editable = isBB)
+bbLowerBand = plot(smoothingMA - smoothingStDev, title = "Banda inferior", color = color.green,
+     display = isBB ? display.all : display.none, editable = isBB)
+fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na, title = "Relleno de bandas",
+     display = isBB ? display.all : display.none, editable = isBB)

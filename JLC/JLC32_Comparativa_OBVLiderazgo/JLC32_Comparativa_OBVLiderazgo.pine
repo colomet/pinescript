@@ -1,0 +1,75 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC32 Comparative] OBV leadership", shorttitle="JLC32 OBV", overlay=false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: OBV (On Balance Volume: volumen acumulado, suma si el precio sube y resta si baja) con una SMA de ayuda,
+//   y marcas cuando el OBV lidera al precio o diverge de él. Se aplica al gráfico normal de un valor o ETF.
+// Cómo se lee: cuenta la dirección del OBV, no su valor. Triángulo verde abajo: el OBV marca máximo de la ventana
+//   y el precio todavía no (lidera al alza). Triángulo rojo arriba: lo mismo a la baja. Círculo naranja arriba:
+//   el precio marca máximo y el OBV no acompaña. Círculo azul abajo: el precio marca mínimo y el OBV no acompaña.
+// Datos y marco: símbolo y marco del gráfico, con volumen real. No sirve sobre un ratio ni un spread: el volumen
+//   de un símbolo compuesto no es real y el script lo avisa en pantalla.
+// Fuente: José Luis Cava, Sistemas de especulación en bolsa, cap. IX.2 «Cómo especula Murphy», pp. 198-199
+//   (paráfrasis): Murphy compara el precio con el OBV; si el indicador lidera al precio, es señal alcista.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] SMA 20 del OBV, ventana de 20 barras y detección de liderazgo y divergencia: la fuente compara
+//   a ojo, sin fórmula ni plazo.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Inputs
+// Todo lo que el usuario puede ajustar.
+int obvSmoothLenInput = input.int(20, "Suavizado OBV (SMA)", minval = 1)
+bool avisoVolumenInput = input.bool(true, "Avisar si el símbolo no tiene volumen utilizable")
+bool verDivergenciaInput = input.bool(true, "Marcar liderazgo y divergencia del OBV")
+int ventanaInput = input.int(20, "[Propuesta] Ventana de comparación (barras)", minval = 2, tooltip = "Murphy compara a ojo, sin plazo definido. Este número no procede de la fuente.")
+
+// ————— Calculations
+// Sin volumen real (spreads, ratios, algunos índices) el OBV sale plano o vacío y no es interpretable.
+sinVolumen = na(volume) or volume == 0
+
+// OBV: acumula el volumen con el signo del cambio del cierre (Cava, IX.2, pp. 198-199)
+var float obv = 0.0
+obv := obv[1] + (close > close[1] ? nz(volume) : close < close[1] ? -nz(volume) : 0)
+
+obvSmooth = ta.sma(obv, obvSmoothLenInput)
+
+// [Propuesta]: extremos de la ventana de comparación; la fuente compara a ojo, sin fórmula ni plazo
+obvMaximo    = not sinVolumen and obv >= ta.highest(obv, ventanaInput)
+obvMinimo    = not sinVolumen and obv <= ta.lowest(obv, ventanaInput)
+precioMaximo = close >= ta.highest(close, ventanaInput)
+precioMinimo = close <= ta.lowest(close, ventanaInput)
+
+// Liderazgo: el OBV marca extremo y el precio todavía no (alcista para Cava, IX.2, pp. 198-199)
+lideraAlza  = obvMaximo and not precioMaximo
+lideraBaja  = obvMinimo and not precioMinimo
+// Divergencia: el precio marca extremo y el OBV no acompaña
+divergeAlza = precioMaximo and not obvMaximo and obv < obv[ventanaInput]
+divergeBaja = precioMinimo and not obvMinimo and obv > obv[ventanaInput]
+
+// ————— Visuals
+// OBV y su suavizado; triángulos de liderazgo, círculos de divergencia y aviso de símbolo sin volumen.
+plot(obv, "OBV", color = color.new(#5D4037, 0), linewidth = 2)
+plot(obvSmooth, "OBV suavizado", color = color.new(#FFA000, 0), linewidth = 1)
+
+plotshape(verDivergenciaInput and lideraAlza and not lideraAlza[1], title = "OBV lidera al alza [Propuesta]", style = shape.triangleup, location = location.bottom, color = color.new(color.green, 0), size = size.tiny)
+plotshape(verDivergenciaInput and lideraBaja and not lideraBaja[1], title = "OBV lidera a la baja [Propuesta]", style = shape.triangledown, location = location.top, color = color.new(color.red, 0), size = size.tiny)
+plotshape(verDivergenciaInput and divergeAlza and not divergeAlza[1], title = "Divergencia: precio arriba sin volumen [Propuesta]", style = shape.circle, location = location.top, color = color.new(color.orange, 0), size = size.tiny)
+plotshape(verDivergenciaInput and divergeBaja and not divergeBaja[1], title = "Divergencia: precio abajo sin volumen [Propuesta]", style = shape.circle, location = location.bottom, color = color.new(color.blue, 0), size = size.tiny)
+
+var label avisoLbl = na
+if avisoVolumenInput and barstate.islast and sinVolumen
+    label.delete(avisoLbl)
+    avisoLbl := label.new(bar_index, obv, "Sin volumen utilizable en este símbolo.\nEl OBV no es interpretable aquí:\nusa el gráfico normal del valor,\nno un ratio ni un spread.", style = label.style_label_left, color = color.new(color.red, 20), textcolor = color.white, size = size.small)
+
+// ————— Alerts
+// Avisan del cambio, no del estado.
+alertcondition(lideraAlza and not lideraAlza[1], "JLC32 OBV · lidera al alza", "El OBV marca nuevo máximo de la ventana y el precio todavía no. Es el liderazgo que Murphy considera señal alcista (SEB p.198-199). [Propuesta]: método de detección y ventana no proceden de la fuente.")
+alertcondition(lideraBaja and not lideraBaja[1], "JLC32 OBV · lidera a la baja", "El OBV marca nuevo mínimo de la ventana y el precio todavía no. Simétrico bajista. [Propuesta].")
+alertcondition(divergeAlza and not divergeAlza[1], "JLC32 OBV · divergencia, subida sin volumen", "El precio marca máximos de la ventana pero el OBV no acompaña y está por debajo de su nivel de hace N barras. El volumen no respalda la subida. [Propuesta].")
+alertcondition(divergeBaja and not divergeBaja[1], "JLC32 OBV · divergencia, caída sin volumen", "El precio marca mínimos de la ventana pero el OBV no acompaña. [Propuesta].")

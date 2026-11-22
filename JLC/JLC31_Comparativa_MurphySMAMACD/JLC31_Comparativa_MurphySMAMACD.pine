@@ -1,0 +1,142 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC31 Comparative] SMA 10w/40w + weekly MACD", shorttitle = "JLC31 SMA+MACD", overlay = false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: medias simples de 10 y 40 semanas y MACD semanal del símbolo del gráfico, pensado para un gráfico de
+//   ratio entre dos símbolos (fuerza relativa), por ejemplo un sector frente a su índice.
+// Cómo se lee: fondo verde = cierre sobre ambas medias; fondo gris = solo sobre la de 40 semanas; sin fondo = bajo
+//   la de 40. Triángulo verde abajo: el MACD cruza al alza su señal con la SMA 10 sobre la 40.
+//   Triángulo rojo arriba: el MACD cruza a la baja su señal con la SMA 10 bajo la 40.
+// Datos y marco: usa el símbolo del gráfico (un ratio se escribe A/B); no tiene símbolo propio. Con «Forzar
+//   temporalidad semanal» calcula en semanal sea cual sea el marco del gráfico. Lee la barra cerrada por defecto.
+// Fuente: José Luis Cava, Sistemas de especulación en bolsa, cap. IX.2 «Cómo especula Murphy», pp. 198-199
+//   (paráfrasis): análisis sectorial por fortaleza relativa (p. 198); medias de 10 y 40 semanas y MACD semanal
+//   (p. 199).
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] cruce del MACD filtrado por la dirección de las medias: la fuente lo describe en prosa, sin fórmula.
+//   [Propuesta] MACD 12/26/9: valores estándar, no comprobados en la fuente.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Valores fijos con nombre: nivel cero, temporalidad, valores por defecto y textos de grupo.
+const float  MACD_ZERO_LEVEL    = 0.0
+const string TF_WEEKLY          = "W"
+const int    SMA_SHORT_DEFAULT  = 10 // Cava, IX.2, p. 199
+const int    SMA_LONG_DEFAULT   = 40 // Cava, IX.2, p. 199
+const int    MACD_FAST_DEFAULT  = 12 // [Propuesta]
+const int    MACD_SLOW_DEFAULT  = 26 // [Propuesta]
+const int    MACD_SIGNAL_DEFAULT = 9 // [Propuesta]
+const string GROUP_TF           = "Temporalidad"
+const string GROUP_SMA          = "Medias móviles"
+const string GROUP_MACD         = "MACD"
+const string GROUP_INFO         = "Ficha"
+
+// ————— Inputs
+// Todo lo que el usuario puede ajustar, agrupado por bloque.
+bool forzarSemanalInput = input.bool(true, "Forzar temporalidad semanal", group = GROUP_TF,
+     tooltip = "Activado: medias y MACD se calculan en semanal sea cual sea el gráfico. " +
+     "Desactivado: usan la temporalidad del gráfico.")
+bool soloCerradasInput = input.bool(true, "Leer solo la barra cerrada", group = GROUP_TF,
+     tooltip = "Activado: se lee la última barra cerrada; las señales no cambian a posteriori, a cambio de ir " +
+     "una barra por detrás (una semana si el marco es semanal). " +
+     "Desactivado: se lee la barra en curso, que puede variar hasta su cierre.")
+int smaShortLenInput = input.int(SMA_SHORT_DEFAULT, "SMA corta (semanas)", minval = 1, group = GROUP_SMA,
+     tooltip = "Media para la tendencia intermedia. En semanal, 10 barras son 10 semanas; " +
+     "en diario, 10 semanas son unas 50 velas.")
+int smaLongLenInput = input.int(SMA_LONG_DEFAULT, "SMA larga (semanas)", minval = 1, group = GROUP_SMA,
+     tooltip = "Media larga. Con 40, el gráfico recoge unas 40 semanas de tendencia.")
+int macdFastInput = input.int(MACD_FAST_DEFAULT, "MACD rápido", minval = 1, group = GROUP_MACD,
+     tooltip = "Periodo de la media rápida del MACD, en barras del marco elegido. Debe ser menor que el lento.")
+int macdSlowInput = input.int(MACD_SLOW_DEFAULT, "MACD lento", minval = 1, group = GROUP_MACD,
+     tooltip = "Periodo de la media lenta del MACD, en barras del marco elegido.")
+int macdSignalInput = input.int(MACD_SIGNAL_DEFAULT, "MACD señal", minval = 1, group = GROUP_MACD,
+     tooltip = "Periodo de la línea de señal. Sus cruces con el MACD generan los triángulos.")
+string fichaInput = input.text_area(
+     "Medias de 10 y 40 semanas y MACD semanal. Fondo verde: cierre sobre ambas medias; gris: solo sobre la de 40. " +
+     "Triángulos: cruce del MACD a favor de las medias. Fuente: Cava, IX.2, p.199.",
+     "Ficha", group = GROUP_INFO, active = false)
+
+// ————— Function declarations
+// Funciones que se ejecutan dentro de request.security. El desplazamiento va dentro de la función porque Pine
+// no admite el operador de historial sobre el resultado de una llamada ni sobre la tupla de ta.macd().
+
+//@function Media simple del cierre, desplazada para leer la barra cerrada.
+//@param len Longitud de la media.
+//@param d Barras de desplazamiento (0 = barra en curso, 1 = última cerrada).
+//@returns SMA del cierre desplazada d barras.
+fSma(int len, int d) =>
+    float media = ta.sma(close, len)
+    media[d]
+
+//@function MACD y línea de señal del cierre, desplazados para leer la barra cerrada.
+//@param fast Periodo rápido.
+//@param slow Periodo lento.
+//@param sig Periodo de la señal.
+//@param d Barras de desplazamiento (0 = barra en curso, 1 = última cerrada).
+//@returns Tupla [línea MACD, línea de señal], ambas desplazadas d barras.
+fMacd(int fast, int slow, int sig, int d) =>
+    [macdRaw, signalRaw, _] = ta.macd(close, fast, slow, sig)
+    [macdRaw[d], signalRaw[d]]
+
+//@function Cierre desplazado para leer la barra cerrada, en el mismo marco que las medias.
+//@param d Barras de desplazamiento (0 = barra en curso, 1 = última cerrada).
+//@returns Cierre desplazado d barras.
+fClose(int d) =>
+    close[d]
+
+// ————— Calculations
+// Todo se lee en el mismo marco (targetTf) y con el mismo desplazamiento: comparar un cierre diario con medias
+// semanales mezclaría dos escalas.
+string targetTf = forzarSemanalInput ? TF_WEEKLY : timeframe.period
+int desplazamiento = soloCerradasInput ? 1 : 0
+
+float smaShort = request.security(syminfo.tickerid, targetTf, fSma(smaShortLenInput, desplazamiento),
+     lookahead = barmerge.lookahead_off)
+float smaLong = request.security(syminfo.tickerid, targetTf, fSma(smaLongLenInput, desplazamiento),
+     lookahead = barmerge.lookahead_off)
+[macdLine, signalLine] = request.security(syminfo.tickerid, targetTf,
+     fMacd(macdFastInput, macdSlowInput, macdSignalInput, desplazamiento), lookahead = barmerge.lookahead_off)
+float cierreRef = request.security(syminfo.tickerid, targetTf, fClose(desplazamiento),
+     lookahead = barmerge.lookahead_off)
+
+// Zonas: sobre ambas medias, o al menos sobre la de 40 semanas (Cava, IX.2, p. 199)
+bool porEncimaAmbas = cierreRef > smaShort and cierreRef > smaLong
+bool porEncimaLarga = cierreRef > smaLong
+
+// [Propuesta]: cruce del MACD filtrado por la dirección vigente de las medias (SMA 10 sobre o bajo SMA 40)
+bool senalCompra = ta.crossover(macdLine, signalLine) and smaShort > smaLong
+bool senalVenta  = ta.crossunder(macdLine, signalLine) and smaShort < smaLong
+
+// ————— Visuals
+// Medias en el panel principal; MACD en el panel propio; triángulos de señal y fondo de zona.
+plot(smaShort, "SMA 10s", color = color.new(#2962FF, 0), force_overlay = true)
+plot(smaLong, "SMA 40s", color = color.new(#EF6C00, 0), force_overlay = true)
+
+plot(macdLine, "MACD", color = color.new(#2E7D32, 0), linewidth = 2)
+plot(signalLine, "Señal", color = color.new(#C62828, 0), linewidth = 1)
+hline(MACD_ZERO_LEVEL, "Cero", color = color.gray, linestyle = hline.style_solid)
+
+plotshape(senalCompra, title = "Cruce MACD a favor de tendencia (compra)", style = shape.triangleup,
+     location = location.bottom, color = color.new(color.green, 0), size = size.small)
+plotshape(senalVenta, title = "Cruce MACD a favor de tendencia (venta)", style = shape.triangledown,
+     location = location.top, color = color.new(color.red, 0), size = size.small)
+
+bgcolor(porEncimaAmbas ? color.new(color.green, 88) : porEncimaLarga ? color.new(color.gray, 92) : na,
+     title = "Zona recomendada (Cava, IX.2, p.199)")
+
+// ————— Alerts
+// Avisan del cambio, no del estado.
+alertcondition(senalCompra, "JLC31 SMA+MACD · cruce MACD a favor (compra)",
+     "El MACD semanal se ha cortado al alza con la SMA10 por encima de la SMA40 (Cava, IX.2, p.199).")
+alertcondition(senalVenta, "JLC31 SMA+MACD · cruce MACD a favor (venta)",
+     "El MACD semanal se ha cortado a la baja con la SMA10 por debajo de la SMA40 (simétrica de la de compra).")
+alertcondition(porEncimaAmbas and not porEncimaAmbas[1], "JLC31 SMA+MACD · entra en zona recomendada",
+     "El símbolo ha quedado por encima de sus medias de 10 y 40 semanas (Cava, IX.2, p.199).")
+alertcondition(not porEncimaLarga and porEncimaLarga[1], "JLC31 SMA+MACD · pierde la SMA40",
+     "El símbolo ha perdido la media de 40 semanas: sale del criterio de Cava, IX.2, p.199.")

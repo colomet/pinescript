@@ -1,0 +1,126 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC71 Management] Stops: support / EMA20 / MACD invalidation", shorttitle="JLC71 Stops", overlay=true)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: calcula hoy dónde caería el stop según tres reglas de Cava: bajo el soporte (último mínimo aislado), bajo
+//   la media exponencial de 20 y la invalidación por cruce a la baja del MACD diario. Es un indicador, no una
+//   estrategia: no sabe si tienes posición ni a qué precio entraste, y no gestiona órdenes.
+// Cómo se lee: línea roja discontinua = stop bajo el soporte (se mueve solo cuando aparece un mínimo nuevo); línea
+//   naranja = stop bajo la EMA 20 (se mueve cada barra); fondo rojo = el MACD diario cortó a la baja (cierre por señal,
+//   no hay nivel de precio). Aspa roja = el precio perdió el stop. El lado corto es simétrico y se activa en ajustes.
+//   El nivel del stop lo trasladas tú a la orden; decide el riesgo antes de entrar.
+// Datos y marco: símbolo del gráfico, pensado para el diario con posición abierta o en estudio. Las tres reglas se
+//   muestran a la vez, cada una con su interruptor.
+// Fuente: José Luis Cava, El arte de especular. Regla A, stop ligeramente bajo el soporte (mínimo de la onda C) al
+//   comprar el retroceso: cap. I, p. 40. Regla B, stop bajo la media exponencial de 20 sesiones: cap. VIII.6.6, p. 217.
+//   Regla C, vender al cortarse a la baja las líneas del MACD diario: cap. I, p. 14. Mínimos y máximos aislados como
+//   soporte y resistencia: cap. I, p. 42.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] el margen «ligeramente» (0,3 ATR bajo el soporte, 0,5 ATR bajo la media, o porcentajes alternativos)
+//   y los pivotes de 5 velas por lado: la fuente no da cifras.
+//   [Aportado] lado corto simétrico y avisos de «stop tocado» por cruce del cierre con la línea de la regla.
+//   [Hueco declarado] la regla C no es un stop de precio sino un cierre por señal; se incluye por cumplir la misma
+//   función (decir cuándo salir) en el sistema EMA 55 + MACD que describe el cap. I (ver JLC91).
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Modos del margen: múltiplo de ATR o porcentaje [Propuesta].
+string MODO_ATR = "Múltiplo de ATR"
+string MODO_PCT = "Porcentaje"
+
+// ————— Inputs
+// Un bloque por regla, más ATR y lado corto.
+string GRP_A = "Regla A · Soporte (EA Cap. I)"
+string GRP_B = "Regla B · EMA20 (EA VIII.6.6)"
+string GRP_C = "Regla C · Invalidación MACD (EA Cap. I)"
+
+bool verReglaAInput = input.bool(true, "Mostrar stop bajo soporte", group = GRP_A)
+int leftBarsInput  = input.int(5, "Pivote · velas izquierda", minval = 1, group = GRP_A)
+int rightBarsInput = input.int(5, "Pivote · velas derecha", minval = 1, group = GRP_A)
+string modoAInput = input.string(MODO_ATR, "Regla A · margen", options = [MODO_ATR, MODO_PCT], group = GRP_A)
+float margenAAtrInput = input.float(0.3, "Regla A · múltiplo de ATR bajo el soporte", minval = 0.0, step = 0.1, tooltip = "Cava dice 'ligeramente por debajo' sin cifra. [Propuesta].", group = GRP_A)
+float margenAPctInput = input.float(0.5, "Regla A · % bajo el soporte", minval = 0.0, step = 0.1, group = GRP_A)
+
+bool verReglaBInput = input.bool(true, "Mostrar stop bajo EMA20", group = GRP_B)
+int ema20LenInput = input.int(20, "Regla B · período EMA", minval = 1, group = GRP_B)
+string modoBInput = input.string(MODO_ATR, "Regla B · margen", options = [MODO_ATR, MODO_PCT], group = GRP_B)
+float margenBAtrInput = input.float(0.5, "Regla B · múltiplo de ATR bajo la media", minval = 0.0, step = 0.1, tooltip = "Mismo margen por defecto que en JLC91 (Backtest), para que las dos lecturas coincidan.", group = GRP_B)
+float margenBPctInput = input.float(1.0, "Regla B · % bajo la media", minval = 0.0, step = 0.1, group = GRP_B)
+
+bool verReglaCInput = input.bool(true, "Mostrar invalidación por MACD (sistema EMA55)", group = GRP_C)
+int macdFastInput   = input.int(12, "MACD rápido", minval = 1, group = GRP_C)
+int macdSlowInput   = input.int(26, "MACD lento", minval = 1, group = GRP_C)
+int macdSignalInput = input.int(9, "MACD señal", minval = 1, group = GRP_C)
+
+int atrLenInput = input.int(14, "ATR · período (común a A y B)", minval = 1, group = "General")
+bool permitirCortosInput = input.bool(false, "Calcular también el lado corto (simétrico)", group = "General")
+
+// ————— Calculations
+// ATR para el margen de las reglas A y B.
+atr = ta.atr(atrLenInput)
+
+// Regla A: stop ligeramente bajo el soporte (Cava, cap. I, p. 40). El soporte se aproxima con el último mínimo
+// aislado (Cava, p. 42); los parámetros del pivote son [Propuesta]
+minAislado = ta.pivotlow(low, leftBarsInput, rightBarsInput)
+maxAislado = ta.pivothigh(high, leftBarsInput, rightBarsInput)
+
+var float ultimoSoporte = na
+var float ultimaResistencia = na
+if not na(minAislado)
+    ultimoSoporte := minAislado
+if not na(maxAislado)
+    ultimaResistencia := maxAislado
+
+margenA = modoAInput == MODO_ATR ? margenAAtrInput * atr : nz(ultimoSoporte) * margenAPctInput / 100
+stopA_largo = ultimoSoporte - margenA
+stopA_corto = ultimaResistencia + margenA
+
+// Regla B: tras el retroceso a la media, stop bajo la EMA de 20 (Cava, VIII.6.6, p. 217)
+ema20 = ta.ema(close, ema20LenInput)
+margenB = modoBInput == MODO_ATR ? margenBAtrInput * atr : ema20 * margenBPctInput / 100
+stopB_largo = ema20 - margenB
+stopB_corto = ema20 + margenB
+
+// Regla C: se vende al cortarse a la baja las líneas del MACD diario (Cava, cap. I, p. 14)
+[macdLine, signalLine, _h] = ta.macd(close, macdFastInput, macdSlowInput, macdSignalInput)
+invalidaLargo = ta.crossunder(macdLine, signalLine)
+invalidaCorto = ta.crossover(macdLine, signalLine)
+
+// [Aportado] avisos de stop tocado: el cierre cruza la línea de la regla
+tocaStopA = verReglaAInput and not na(stopA_largo) and ta.crossunder(close, stopA_largo)
+tocaStopB = verReglaBInput and not na(stopB_largo) and ta.crossunder(close, stopB_largo)
+tocaStopACorto = permitirCortosInput and verReglaAInput and not na(stopA_corto) and ta.crossover(close, stopA_corto)
+tocaStopBCorto = permitirCortosInput and verReglaBInput and not na(stopB_corto) and ta.crossover(close, stopB_corto)
+
+// ————— Visuals
+// Líneas de stop, marcas de pivote, stop tocado y fondo de invalidación.
+plot(verReglaAInput ? stopA_largo : na, "Stop A · bajo soporte", color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 1)
+plot(verReglaAInput and permitirCortosInput ? stopA_corto : na, "Stop A · sobre resistencia (corto)", color = color.new(color.red, 40), style = plot.style_linebr, linewidth = 1)
+
+plot(verReglaBInput ? stopB_largo : na, "Stop B · bajo EMA20", color = color.new(color.orange, 0), linewidth = 1)
+plot(verReglaBInput and permitirCortosInput ? stopB_corto : na, "Stop B · sobre EMA20 (corto)", color = color.new(color.orange, 40), linewidth = 1)
+plot(verReglaBInput ? ema20 : na, "EMA20 (referencia)", color = color.new(color.gray, 70), linewidth = 1)
+
+plotshape(verReglaAInput and not na(minAislado), title = "Nuevo soporte (pivote)", style = shape.triangleup, location = location.belowbar, color = color.new(color.green, 50), size = size.tiny)
+plotshape(verReglaAInput and permitirCortosInput and not na(maxAislado), title = "Nueva resistencia (pivote)", style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 50), size = size.tiny)
+
+plotshape(tocaStopA or tocaStopB, title = "STOP TOCADO (largo)", style = shape.xcross, location = location.abovebar, color = color.new(color.red, 0), size = size.small)
+plotshape(tocaStopACorto or tocaStopBCorto, title = "STOP TOCADO (corto)", style = shape.xcross, location = location.belowbar, color = color.new(color.red, 0), size = size.small)
+
+bgcolor(verReglaCInput and invalidaLargo ? color.new(color.red, 85) : na, title = "Invalidación MACD (largo)")
+bgcolor(verReglaCInput and permitirCortosInput and invalidaCorto ? color.new(color.green, 85) : na, title = "Invalidación MACD (corto)")
+
+// ————— Alerts
+// Stop tocado por regla e invalidación por MACD, en largo y en corto.
+alertcondition(tocaStopA, "JLC71 Stop A tocado (bajo soporte)", "El precio ha perforado el nivel de stop de la Regla A (ligeramente bajo el último soporte/mínimo aislado, EA Cap. I). Revisar cierre de la posición larga.")
+alertcondition(tocaStopB, "JLC71 Stop B tocado (bajo EMA20)", "El precio ha perdido la EMA20 menos el margen configurado. Stop de EA VIII.6.6. Revisar cierre de la posición larga.")
+alertcondition(invalidaLargo, "JLC71 Invalidación MACD (sistema EMA55, largo)", "Las líneas del MACD diario se han cortado a la baja: EA Cap. I ordena vender los contratos comprados del sistema EMA55+MACD. No es un nivel de precio, es un cierre por señal.")
+alertcondition(tocaStopACorto, "JLC71 Stop A tocado (sobre resistencia, corto)", "El precio ha superado el nivel de stop del corto según la Regla A (simétrica).")
+alertcondition(tocaStopBCorto, "JLC71 Stop B tocado (sobre EMA20, corto)", "El precio ha superado la EMA20 más el margen configurado, en una posición corta.")
+alertcondition(invalidaCorto, "JLC71 Invalidación MACD (sistema EMA55, corto)", "Las líneas del MACD diario se han cortado al alza: cierre del corto del sistema EMA55+MACD, simétrico a EA Cap. I.")

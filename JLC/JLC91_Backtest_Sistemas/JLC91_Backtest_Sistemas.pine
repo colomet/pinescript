@@ -1,0 +1,210 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+strategy("[JLC91 Backtest] Systems: EMA55 + MACD / EMA20 + ADX", shorttitle="JLC91 Systems", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=20, commission_type=strategy.commission.percent, commission_value=0.05, pyramiding=0, calc_on_every_tick=false, process_orders_on_close=true)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: estrategia de backtesting que prueba en el histórico dos sistemas de Cava, a elegir con un selector: A (EMA
+//   55 + MACD diario) y B (retroceso a la EMA 20 con ADX). Lleva stop, comisión y tamaño de posición. No es una
+//   herramienta de operativa.
+// Cómo se lee: en el gráfico, la EMA del sistema elegido (la otra atenuada), el stop activo (línea roja) y las
+//   operaciones; el resultado está en el Probador de estrategias. Los triángulos de máximos y mínimos aislados son solo
+//   visuales. Para operar usa JLC41, JLC62, JLC63 y JLC51.
+// Datos y marco: símbolo y marco del gráfico; los dos sistemas son diarios en la fuente. Capital 10.000, comisión 0,05
+//   % y 20 % del capital por operación son valores de referencia: ajústalos antes de sacar conclusiones. El filtro
+//   opcional lee MACD mensual y semanal y estocástico semanal sin mirar al futuro.
+// Fuente: José Luis Cava, El arte de especular. Sistema A: cap. I, pp. 13-14 (EMA 55 con MACD diario; entrada y
+//   cancelación en p. 14). Sistema B: VIII.6.6, p. 217 (retroceso a la EMA 20, ADX con pendiente positiva o sobre 30,
+//   stop por debajo de la media). MACD 12/26/9: IV.1, p. 101. Semáforo opcional: I.5.3, p. 37.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente. [Propuesta] margen del stop (0,5 ATR o 1 %), tolerancia del retroceso,
+//   ventana de 10 barras hasta el cruce del MACD, filtro por semáforo, salida del Sistema B al perder la EMA 20 y DI+
+//   sobre DI- en la entrada B. [Aportado] máximos y mínimos aislados como capa visual.
+// Aviso: herramienta de análisis; un backtest no garantiza resultados futuros ni es una recomendación de inversión.
+
+// ————— Constants
+// Nivel cero del MACD; las dos líneas deben estar al mismo lado para el Sistema A (Cava, p. 14)
+float MACD_NIVEL_CERO = 0
+// ADX por encima de 30 = tendencia fuerte (Cava, VIII.6.5 p. 215; VIII.6.6 p. 217)
+float ADX_NIVEL_FUERTE = 30
+// Textos del selector de sistema y del modo del stop; el código los compara con estas constantes
+string SISTEMA_A = "A · EMA55 + MACD (Cap. I)"
+string SISTEMA_B = "B · EMA20 + ADX (Cap. VIII.6.6)"
+string MODO_ATR = "Múltiplo de ATR"
+string MODO_PCT = "Porcentaje"
+
+// ————— Inputs
+// Sistema a probar: A (EMA 55 + MACD) o B (EMA 20 + ADX); una sola estrategia, un solo slot
+string sistemaInput = input.string(SISTEMA_A, "Sistema a probar", options = [SISTEMA_A, SISTEMA_B], group = "Sistema")
+// Cortos desactivados por defecto: la operativa de la cartera es larga
+bool permitirCortosInput = input.bool(false, "Permitir posiciones cortas", tooltip = "El Sistema A define el lado corto de forma simétrica en la fuente. El Sistema B también, pero la operativa de la cartera es larga.", group = "Sistema")
+
+// Periodos de las dos medias exponenciales (Cava, Cap. I p. 14 y VIII.6.6 p. 217)
+int ema55Input = input.int(55, "EMA del Sistema A", minval = 1, group = "Medias")
+int ema20Input = input.int(20, "EMA del Sistema B", minval = 1, group = "Medias")
+
+// MACD 12/26/9, los periodos habituales de la fuente (Cava, IV.1 p. 101)
+int macdFastInput   = input.int(12, "MACD rápido", minval = 1, group = "MACD (EA IV.1)")
+int macdSlowInput   = input.int(26, "MACD lento", minval = 1, group = "MACD (EA IV.1)")
+int macdSignalInput = input.int(9, "MACD señal", minval = 1, group = "MACD (EA IV.1)")
+
+// Periodo del ADX y los DI: 14, el de Wilder (Cava, VIII.6.4 pp. 214-215)
+int adxLenInput = input.int(14, "Período ADX/DI", minval = 1, group = "ADX (EA VIII)")
+
+// [Propuesta] Cuantificaciones que la fuente no da: tolerancia del retroceso y ventana hasta el cruce del MACD
+float toleranciaInput = input.float(0.5, "[Propuesta] Tolerancia del retroceso a la media (× ATR)", minval = 0.0, step = 0.1, tooltip = "Cava dice 'retroceda hasta la media' sin definir si debe tocarla o perforarla. Este margen define qué se considera 'llegar a la media'.", group = "Cuantificaciones no presentes en la fuente")
+int ventanaInput = input.int(10, "[Propuesta] Ventana entre retroceso y cruce del MACD (barras)", minval = 1, tooltip = "La fuente dice 'y a continuación', sin plazo.", group = "Cuantificaciones no presentes en la fuente")
+
+// [Propuesta] Stop «ligeramente por debajo de la media» (Cava, p. 217): la fuente no da cifra; ATR(14) o %
+string modoStopInput = input.string(MODO_ATR, "Stop · modo", options = [MODO_ATR, MODO_PCT], group = "Stop (EA VIII.6.6: 'ligeramente por debajo de la media')")
+float stopAtrInput = input.float(0.5, "Stop · múltiplo de ATR bajo la media", minval = 0.1, step = 0.1, group = "Stop (EA VIII.6.6: 'ligeramente por debajo de la media')")
+float stopPctInput = input.float(1.0, "Stop · % bajo la media", minval = 0.1, step = 0.1, group = "Stop (EA VIII.6.6: 'ligeramente por debajo de la media')")
+int atrLenInput = input.int(14, "ATR · período", minval = 1, group = "Stop (EA VIII.6.6: 'ligeramente por debajo de la media')")
+
+// [Propuesta] Filtro opcional de tendencia dominante: el semáforo de JLC41 (Cava, I.5.3 p. 37)
+bool filtroSemaforoInput = input.bool(false, "[Propuesta] Exigir semáforo I.5.3 a favor", tooltip = "MACD mensual cortado + MACD semanal sobre cero + estocástico %K semanal sobre 60. No forma parte de ninguno de los dos sistemas, pero EA VII.2 condiciona toda señal al sentido de la tendencia dominante.", group = "Filtro de tendencia dominante")
+
+// Solo visual: máximos y mínimos aislados 5/5; no intervienen en las órdenes
+bool mostrarPivotsInput = input.bool(true, "Mostrar máximos/mínimos aislados (solo visual)", group = "Presentación")
+int leftBarsInput  = input.int(5, "Pivotes · velas izquierda", minval = 1, group = "Presentación")
+int rightBarsInput = input.int(5, "Pivotes · velas derecha", minval = 1, group = "Presentación")
+
+// ————— Function declarations
+// Devuelve la línea rápida y la lenta del MACD (se descarta el histograma)
+f_macdCerrado(int fast, int slow, int sig) =>
+    [m, s, h] = ta.macd(close, fast, slow, sig)
+    [m, s]
+
+// Estocástico %K sin suavizar; si el rango es cero repite el valor anterior (50 al inicio)
+f_stochK(int len) =>
+    hh = ta.highest(high, len)
+    ll = ta.lowest(low, len)
+    rango = hh - ll
+    var float k = na
+    k := rango > 0 ? 100 * (close - ll) / rango : nz(k[1], 50.0)
+    k
+
+// ————— Calculations
+// Interruptor del sistema activo y su media: EMA 55 (A) o EMA 20 (B)
+esSistemaA = sistemaInput == SISTEMA_A
+
+ema55 = ta.ema(close, ema55Input)
+ema20 = ta.ema(close, ema20Input)
+mediaActiva = esSistemaA ? ema55 : ema20
+
+// ATR para la tolerancia y el stop; MACD y DI/ADX sobre el marco del gráfico
+atr = ta.atr(atrLenInput)
+[macdLine, signalLine] = f_macdCerrado(macdFastInput, macdSlowInput, macdSignalInput)
+[diplus, diminus, adx] = ta.dmi(adxLenInput, adxLenInput)
+
+// Marcos mayores sin mirar al futuro (lookahead_off): MACD mensual, MACD semanal y %K semanal de 14
+[macdM, signalM] = request.security(syminfo.tickerid, "M", f_macdCerrado(macdFastInput, macdSlowInput, macdSignalInput), lookahead = barmerge.lookahead_off)
+[macdW, _sw]     = request.security(syminfo.tickerid, "W", f_macdCerrado(macdFastInput, macdSlowInput, macdSignalInput), lookahead = barmerge.lookahead_off)
+stochW = request.security(syminfo.tickerid, "W", f_stochK(14), lookahead = barmerge.lookahead_off)
+
+// Semáforo alcista/bajista de la tendencia dominante (Cava, I.5.3 p. 37)
+semaforoAlcista = macdM > signalM and macdW > MACD_NIVEL_CERO and stochW > 60
+semaforoBajista = macdM < signalM and macdW < MACD_NIVEL_CERO and stochW < 40
+
+// Con el filtro apagado no condiciona nada
+filtroLargoOk = not filtroSemaforoInput or semaforoAlcista
+filtroCortoOk = not filtroSemaforoInput or semaforoBajista
+
+// Predisposición: precio al lado correcto de la media y pendiente positiva o plana (Cava, p. 14)
+pendienteMedia = mediaActiva - mediaActiva[1]
+predisposicionAlcista = close > mediaActiva and pendienteMedia >= 0
+predisposicionBajista = close < mediaActiva and pendienteMedia <= 0
+
+// [Propuesta] Retroceso hasta la media con tolerancia de ATR (la fuente no dice si debe tocarla o perforarla)
+margen = toleranciaInput * atr
+tocaMediaDesdeArriba = low <= mediaActiva + margen
+tocaMediaDesdeAbajo  = high >= mediaActiva - margen
+
+// Última barra en la que hubo retroceso a la media, para medir la ventana
+var int barraRetrocesoLargo = na
+var int barraRetrocesoCorto = na
+if tocaMediaDesdeArriba
+    barraRetrocesoLargo := bar_index
+if tocaMediaDesdeAbajo
+    barraRetrocesoCorto := bar_index
+
+// Retroceso vigente = dentro de la ventana en barras
+retrocesoVigenteLargo = not na(barraRetrocesoLargo) and bar_index - barraRetrocesoLargo <= ventanaInput
+retrocesoVigenteCorto = not na(barraRetrocesoCorto) and bar_index - barraRetrocesoCorto <= ventanaInput
+
+// Cruces de las dos líneas del MACD y posición de ambas respecto al cero
+macdCruzaAlza = ta.crossover(macdLine, signalLine)
+macdCruzaBaja = ta.crossunder(macdLine, signalLine)
+ambasSobreCero = macdLine > MACD_NIVEL_CERO and signalLine > MACD_NIVEL_CERO
+ambasBajoCero  = macdLine < MACD_NIVEL_CERO and signalLine < MACD_NIVEL_CERO
+
+// Sistema A: predisposición + retroceso a la EMA 55 + cruce del MACD con ambas líneas al mismo lado del cero (p. 14)
+entradaA_larga = predisposicionAlcista and retrocesoVigenteLargo and macdCruzaAlza and ambasSobreCero
+entradaA_corta = predisposicionBajista and retrocesoVigenteCorto and macdCruzaBaja and ambasBajoCero
+// Salida del Sistema A: cruce del MACD en sentido contrario (p. 14)
+salidaA_larga = macdCruzaBaja
+salidaA_corta = macdCruzaAlza
+
+// Sistema B (VIII.6.6 p. 217): ADX con pendiente positiva o sobre 30; retroceso a la EMA 20 y recuperación
+adxFuerte = adx > ADX_NIVEL_FUERTE or adx > adx[1]
+vuelveASuperarMedia = ta.crossover(close, ema20)
+vuelveAPerderMedia  = ta.crossunder(close, ema20)
+
+// DI+ sobre DI- como confirmación del sentido [Propuesta]: la fuente no lo exige en esta regla
+entradaB_larga = adxFuerte and retrocesoVigenteLargo and vuelveASuperarMedia and diplus > diminus
+entradaB_corta = adxFuerte and retrocesoVigenteCorto and vuelveAPerderMedia and diminus > diplus
+// [Propuesta] La fuente solo da el stop bajo la media; aquí también se sale al perder la EMA 20
+salidaB_larga = vuelveAPerderMedia
+salidaB_corta = vuelveASuperarMedia
+
+// Selección del sistema activo; cortos solo si se permiten
+entradaLarga = (esSistemaA ? entradaA_larga : entradaB_larga) and filtroLargoOk
+entradaCorta = permitirCortosInput and (esSistemaA ? entradaA_corta : entradaB_corta) and filtroCortoOk
+salidaLarga  = esSistemaA ? salidaA_larga : salidaB_larga
+salidaCorta  = esSistemaA ? salidaA_corta : salidaB_corta
+
+// Stop: distancia bajo (o sobre) la media activa, en ATR o en %
+distanciaStop = modoStopInput == MODO_ATR ? stopAtrInput * atr : mediaActiva * stopPctInput / 100
+stopLargo = mediaActiva - distanciaStop
+stopCorto = mediaActiva + distanciaStop
+
+// El stop se fija al abrir la posición y se mantiene hasta cerrarla
+var float stopActivo = na
+// Órdenes: entrada, stop y salida por señal contraria
+if entradaLarga and strategy.position_size <= 0
+    stopActivo := stopLargo
+if entradaCorta and strategy.position_size >= 0
+    stopActivo := stopCorto
+
+// ————— Strategy calls
+if entradaLarga
+    strategy.entry("Largo", strategy.long)
+if entradaCorta
+    strategy.entry("Corto", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit("Stop L", from_entry = "Largo", stop = stopActivo)
+    if salidaLarga
+        strategy.close("Largo", comment = esSistemaA ? "MACD corta a la baja" : "Pierde la EMA20")
+if strategy.position_size < 0
+    strategy.exit("Stop C", from_entry = "Corto", stop = stopActivo)
+    if salidaCorta
+        strategy.close("Corto", comment = esSistemaA ? "MACD corta al alza" : "Supera la EMA20")
+
+// ————— Visuals
+// Medias (la del sistema activo, resaltada), stop y semáforo de fondo
+plot(ema55, "EMA 55 (Sistema A)", color = esSistemaA ? color.new(color.blue, 0) : color.new(color.blue, 70), linewidth = esSistemaA ? 2 : 1)
+plot(ema20, "EMA 20 (Sistema B)", color = esSistemaA ? color.new(color.orange, 70) : color.new(color.orange, 0), linewidth = esSistemaA ? 1 : 2)
+plot(strategy.position_size != 0 ? stopActivo : na, "Stop activo", color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 1)
+
+bgcolor(filtroSemaforoInput ? (semaforoAlcista ? color.new(color.green, 93) : semaforoBajista ? color.new(color.red, 93) : color.new(color.gray, 95)) : na, title = "Semáforo I.5.3")
+
+// Máximos y mínimos aislados 5/5, solo como capa visual
+maxAislado = ta.pivothigh(high, leftBarsInput, rightBarsInput)
+minAislado = ta.pivotlow(low, leftBarsInput, rightBarsInput)
+
+plotshape(mostrarPivotsInput and not na(maxAislado), style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 40), size = size.tiny, offset = -rightBarsInput, title = "Máximo aislado (solo visual)")
+plotshape(mostrarPivotsInput and not na(minAislado), style = shape.triangleup, location = location.belowbar, color = color.new(color.green, 40), size = size.tiny, offset = -rightBarsInput, title = "Mínimo aislado (solo visual)")

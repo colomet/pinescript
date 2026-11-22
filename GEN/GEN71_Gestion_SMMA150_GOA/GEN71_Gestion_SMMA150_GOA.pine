@@ -1,0 +1,52 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator(title = "[GEN71 Management] SMMA 150 exit line", shorttitle = "GEN71 SMMA 150", overlay = true,
+ timeframe = "", timeframe_gaps = true)
+
+// ————— About
+// Versión: 0.1.1.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: media móvil suavizada (SMMA, la media recursiva de Wilder) del precio, de 150 velas por defecto. Sirve
+// como referencia de la tendencia de fondo y como línea de salida de posiciones largas. Con el mismo periodo
+// reacciona más despacio que una EMA. Solo dibuja la línea: no genera señales ni alertas.
+// Cómo se lee: línea morada = SMMA. Con el precio por encima, la tendencia de fondo se considera intacta; si el
+// precio la cruza a la baja, es la salida que describe el criterio de origen. El script no marca el corte: se
+// lee sobre el gráfico.
+// Datos y marco: gráfico actual, cualquier marco temporal (150 velas son unos 7 meses en diario). No pide
+// símbolos externos.
+// Fuente: Felix Prehn, Goat Academy, canal «Felix and Friends»: salir de la posición cuando el precio corta la
+// media de 150 sesiones. Vídeo concreto sin identificar; tipo de media sin confirmar. No procede de Cava.
+// Créditos: código propio; el criterio de salida procede del vídeo de Goat Academy.
+// Marcas: sin marca = regla de la fuente.
+// [Aportado] criterio de salida y periodo 150: de Goat Academy, no de Cava.
+// [Aportado] tipo de media SMMA: sin confirmar contra el vídeo de origen.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+
+// ————— Constants
+const int LENGTH_DEFAULT = 150 // [Aportado] periodo 150 de la regla de Goat Academy; vídeo sin identificar
+
+
+// ————— Inputs
+int lenInput = input.int(LENGTH_DEFAULT, "Longitud", minval = 1,
+ tooltip = "Velas de la media. Más velas: línea más lenta. " +
+ "150 velas: unos 7 meses en diario o casi 3 años en semanal.")
+float srcInput = input.source(close, "Fuente",
+ tooltip = "Precio sobre el que se calcula la media. Por defecto: cierre.")
+
+string fichaInput = input.text_area("SMMA de 150 velas como referencia de tendencia y línea de salida. Sin señales " +
+ "ni alertas. Criterio de Goat Academy; tipo de media sin confirmar.", "Ficha", active = false)
+
+
+// ————— Calculations
+// SMMA (RMA de TradingView): arranca con la media simple de las primeras velas y después aplica la recursión de
+// Wilder. Cada valor nuevo pesa 1/longitud, igual que en una SMA y la mitad que en una EMA (2/(longitud+1)); los
+// valores antiguos se olvidan poco a poco, no de golpe. El valor anterior se lee en todas las velas.
+var float smma = na
+smma := na(smma[1]) ? ta.sma(srcInput, lenInput) : (smma[1] * (lenInput - 1) + srcInput) / lenInput
+
+
+// ————— Visuals
+plot(smma, "SMMA", color = #673AB7)

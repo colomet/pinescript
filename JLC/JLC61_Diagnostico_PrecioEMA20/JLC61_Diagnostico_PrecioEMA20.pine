@@ -1,0 +1,104 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC61 Diagnostic] Price: EMA20 + isolated max/min", shorttitle = "JLC61 Price EMA20", overlay = true)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: dibuja la media exponencial de 20 velas sobre el precio, marca los máximos y mínimos aislados y avisa
+//   cuando el cierre cruza la media. Sirve para localizar la zona de entrada tras un retroceso dentro de una
+//   tendencia, y el stop.
+// Cómo se lee: línea azul = EMA de 20. Triángulo rojo = máximo aislado; triángulo verde = mínimo aislado, cada uno con
+//   una línea discontinua que se extiende a la derecha hasta el siguiente. Las alertas avisan cuando el cierre
+//   recupera la EMA (zona de entrada tras retroceso) o la pierde (zona del stop). Las alertas no comprueban el ADX:
+//   la fuente exige ADX con pendiente positiva o sobre 30, míralo antes de actuar.
+// Datos y marco: símbolo y marco del gráfico; la fuente habla del diario. Cada máximo o mínimo aislado se confirma
+//   5 velas después de formarse, así que el triángulo aparece con ese retraso (se dibuja sobre la vela del pico).
+// Fuente: José Luis Cava, El arte de especular, cap. VIII.6.6, pp. 216-218: retroceso a la media exponencial de 20
+//   sesiones para incorporarse a la tendencia, con el stop junto a la media, cuando el ADX tiene pendiente positiva o
+//   lecturas sobre 30 (paráfrasis).
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] pivotes de 5 velas por lado para los máximos y mínimos aislados: la fuente no los cuantifica.
+//   [Hueco declarado] las medias desplazadas de Cava (cap. I.5.2, p. 36) van en el script JLC81.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+const int EMA_LENGTH_DEFAULT = 20 // Cava, VIII.6.6, p. 217: media exponencial de 20 sesiones
+const int PIVOT_BARS_DEFAULT = 5 // [Propuesta] velas a cada lado del pivote; la fuente no lo fija
+const string GRP_CALC = "Cálculo" // Ajustes que cambian el valor
+const string GRP_INFO = "Información" // Bloque informativo
+
+
+// ————— Inputs
+int emaLengthInput = input.int(EMA_LENGTH_DEFAULT, "Longitud EMA (velas)", minval = 1, maxval = 500, group = GRP_CALC,
+     tooltip = "Velas de la media exponencial. 20 es la regla de Cava. En diario son unas 4 semanas " +
+     "de mercado; en semanal, 20 semanas.")
+
+int leftBarsInput = input.int(PIVOT_BARS_DEFAULT, "Velas a la izquierda (filtro)", minval = 1, maxval = 50,
+     group = GRP_CALC,
+     tooltip = "Velas más bajas (o más altas) que debe tener a su izquierda un pico para contar como " +
+     "aislado. [Propuesta]: la fuente no da la cifra. Más velas: menos marcas y más " +
+     "importantes. 5 velas en diario son una semana.")
+
+int rightBarsInput = input.int(PIVOT_BARS_DEFAULT, "Velas a la derecha (confirmación)", minval = 1, maxval = 50,
+     group = GRP_CALC,
+     tooltip = "Velas posteriores necesarias para confirmar el pico. [Propuesta]. Más velas: más " +
+     "seguridad y más retraso: el triángulo aparece esas velas después del pico.")
+
+string infoInput = input.text_area("EMA de 20 velas con máximos y mínimos aislados. Los avisos de cruce de la " +
+     "EMA no comprueban el ADX: míralo antes de actuar.",
+     "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+float emaVal = ta.ema(close, emaLengthInput) // EMA del cierre
+float maxAislado = ta.pivothigh(high, leftBarsInput, rightBarsInput) // Precio del pico; solo en la vela que lo confirma
+float minAislado = ta.pivotlow(low, leftBarsInput, rightBarsInput) // Precio del valle; solo en la vela que lo confirma
+bool hayMaxAislado = not na(maxAislado) // Pasa a bool: v6 no convierte números en bool
+bool hayMinAislado = not na(minAislado)
+bool recuperaEma = ta.crossover(close, emaVal) // Cambio de estado: el cierre pasa de debajo a encima de la EMA
+bool perdeEma = ta.crossunder(close, emaVal) // Cambio de estado: el cierre pasa de encima a debajo
+
+
+// ————— Visuals
+plot(emaVal, "EMA", color = color.blue, linewidth = 2)
+
+// El triángulo se dibuja sobre la vela del pico (offset negativo), aunque se confirme rightBarsInput velas después
+plotshape(hayMaxAislado, "Máximo aislado", style = shape.triangledown, location = location.abovebar,
+     color = color.red, size = size.small, offset = -rightBarsInput)
+plotshape(hayMinAislado, "Mínimo aislado", style = shape.triangleup, location = location.belowbar,
+     color = color.green, size = size.small, offset = -rightBarsInput)
+
+// Líneas horizontales desde el último máximo y el último mínimo; se borra la anterior para no llenar el gráfico
+var line maxLine = na
+var line minLine = na
+
+if hayMaxAislado
+    line.delete(maxLine)
+    maxLine := line.new(bar_index - rightBarsInput, maxAislado, bar_index, maxAislado,
+         extend = extend.right, color = color.red, style = line.style_dashed)
+
+if hayMinAislado
+    line.delete(minLine)
+    minLine := line.new(bar_index - rightBarsInput, minAislado, bar_index, minAislado,
+         extend = extend.right, color = color.green, style = line.style_dashed)
+
+
+// ————— Alerts
+// Se alerta el cambio, no el estado. Las dos de la EMA son las que importan: Cava (VIII.6.6, p. 217) sitúa la entrada
+// cuando el precio, tras retroceder, vuelve a superar la media, y el stop junto a ella.
+alertcondition(recuperaEma, "JLC61 Precio EMA20 · recupera la EMA",
+     "El precio vuelve a superar la EMA tras un retroceso. Con ADX por encima de 30 es la " +
+     "entrada de EA VIII.6.6. Comprueba el ADX antes de actuar.")
+alertcondition(perdeEma, "JLC61 Precio EMA20 · pierde la EMA",
+     "El precio pierde la EMA. En una posición abierta según EA VIII.6.6 es la zona donde la fuente " +
+     "sitúa el stop.")
+alertcondition(hayMaxAislado, "JLC61 Precio EMA20 · nuevo máximo aislado",
+     "Confirmado un máximo aislado: referencia de resistencia hasta que aparezca otro. " +
+     "[Propuesta]: los pivotes de 5 velas no son de Cava.")
+alertcondition(hayMinAislado, "JLC61 Precio EMA20 · nuevo mínimo aislado",
+     "Confirmado un mínimo aislado: referencia de soporte hasta que aparezca otro. " +
+     "[Propuesta]: los pivotes de 5 velas no son de Cava.")

@@ -1,0 +1,235 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC42 Trend] Dashboard: MACD + stochastic + CCI + ADX/DI + EMA, monthly/weekly/daily", shorttitle="JLC42 Dashboard", overlay=true)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: tablero con MACD, estocástico, CCI, ADX/DI y medias exponenciales en los marcos mensual, semanal y
+//   diario a la vez. Ocupa un solo slot, no dibuja nada sobre el precio y reúne en una tabla indicadores de
+//   escalas distintas, porque lo que se compara son estados y no alturas.
+// Cómo se lee: la fila TENDENCIA aplica las tres condiciones de Cava (MACD mensual cortado al alza, línea rápida
+//   del MACD semanal sobre cero, línea rápida del estocástico semanal sobre 60; al revés y bajo 40 para bajista).
+//   Si no concuerdan marca INDEFINIDO: la fuente no define tendencia ahí. El resto de filas es contexto, no
+//   permiso para entrar. La última columna cuenta cuántos indicadores del marco diario apuntan al mismo lado.
+// Datos y marco: símbolo del gráfico, pensado para el diario. Lee por su cuenta los marcos semanal y mensual.
+//   Por defecto solo usa barras cerradas de los marcos superiores (no cambia a posteriori, a cambio de ir un
+//   periodo por detrás); sin esa opción muestra el periodo en curso, que puede variar hasta su cierre.
+// Fuente: José Luis Cava, El arte de especular. Tendencia: cap. I.5.3, p. 37 (paráfrasis). MACD 12/26/9: cap. IV.1,
+//   p. 101; cruce de las dos líneas y nivel cero: cap. IV.2.2 p. 103 y IV.2.1 pp. 101-102. Estocástico de 14
+//   periodos: cap. V.1.1, pp. 141-142; niveles 80/20: cap. V.1.2, p. 143. CCI de 14 periodos y niveles +50/-50:
+//   cap. VII.3.1, p. 187. ADX/DI: cap. VIII.6.5, pp. 214-215 (periodo 14, lecturas sobre 30 y sobre 40);
+//   retroceso a la media exponencial de 20 sesiones: cap. VIII.6.6, p. 217; media exponencial diaria de 55 sesiones:
+//   cap. I, p. 14. Exigencia de que coincidan varios
+//   indicadores: cap. III.1.4, p. 80.
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] constante 0,015 del CCI (la fuente imprime 0,15, ver «Hueco declarado»); ADX bajo 20 como «sin
+//   tendencia» (la fuente habla de 15-20 como tendencia débil que se fortalece).
+//   [Aportado] recuento de indicadores del marco diario a cada lado: inspirado en cap. III.1.4, p. 80, pero la
+//   cifra (5 de 6) no es de la fuente; los umbrales de la tabla que no estén arriba tampoco.
+//   [Hueco declarado] el libro imprime la constante del CCI como 0,15 (cap. VII, p. 185); el script usa 0,015.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Umbrales de lectura de la tabla.
+// Estocástico: 80/20 sobrecompra y sobreventa (Cava, V.1.2, p. 143); 60/40 filtro semanal (Cava, I.5.3, p. 37)
+float NIVEL_80 = 80
+float NIVEL_60 = 60
+float NIVEL_40 = 40
+float NIVEL_20 = 20
+// ADX: sobre 30 tendencia fuerte, sobre 40 muy fuerte (Cava, VIII.6.5, p. 215); el 20 es [Propuesta]
+float ADX_BAJO = 20
+float ADX_FUERTE = 30
+float ADX_MAGNIFICO = 40
+// Constante de Lambert del CCI: [Propuesta] 0,015 (la fuente imprime 0,15, p. 185)
+float CCI_LAMBERT_CONSTANT = 0.015
+// Nivel de equilibrio del MACD (Cava, IV.2.1, p. 101)
+float CERO = 0
+
+// Marcos de lectura (Cava, I.5.3, p. 37)
+string TF_M = "M"
+string TF_W = "W"
+string TF_D = "D"
+
+// ————— Inputs
+// Periodos de cada indicador y opciones de presentación.
+bool soloCerradasInput = input.bool(true, "Leer solo barras cerradas de los marcos superiores", tooltip = "Activado: el estado no cambia a posteriori.")
+// MACD 12/26/9 (Cava, IV.1, p. 101)
+int macdFastInput   = input.int(12, "MACD rápido", minval = 1, group = "Parámetros")
+int macdSlowInput   = input.int(26, "MACD lento", minval = 1, group = "Parámetros")
+int macdSignalInput = input.int(9, "MACD señal", minval = 1, group = "Parámetros")
+// Estocástico 14 (Cava, V.1.1, p. 142); CCI 14 y umbral +50/-50 (Cava, VII.3.1, p. 187)
+// ADX/DI 14 (Cava, VIII.6.4, p. 214)
+int stochLenInput   = input.int(14, "Estocástico %K", minval = 1, group = "Parámetros")
+int cciLenInput     = input.int(14, "CCI", minval = 1, group = "Parámetros")
+int cciUmbralInput  = input.int(50, "CCI · umbral (±)", minval = 1, group = "Parámetros")
+int adxLenInput     = input.int(14, "ADX / DI", minval = 1, group = "Parámetros")
+// EMA 20 (Cava, VIII.6.6, p. 217); EMA 55 (Cava, cap. I, p. 14)
+int ema20LenInput   = input.int(20, "EMA corta", minval = 1, group = "Parámetros")
+int ema55LenInput   = input.int(55, "EMA larga", minval = 1, group = "Parámetros")
+
+// Presentación de la tabla
+string posicionInput = input.string("Superior derecha", "Posición", options = ["Superior derecha", "Superior izquierda", "Inferior derecha", "Inferior izquierda"], group = "Presentación")
+string tamanoInput = input.string("Pequeño", "Tamaño de texto", options = ["Diminuto", "Pequeño", "Normal"], group = "Presentación")
+bool verValoresInput = input.bool(true, "Mostrar valores numéricos junto al estado", group = "Presentación")
+
+// ————— Function declarations
+// Cada función devuelve el valor ya desplazado d barras, para leer la barra cerrada sin repintado.
+f_macd(int fast, int slow, int sig, int d) =>
+    [m, s, h] = ta.macd(close, fast, slow, sig)
+    [m[d], s[d]]
+
+// %K sin suavizar (Cava, V.1.1, p. 142), con guarda de división por cero: arrastra el último valor válido
+f_stochK(int len, int d) =>
+    hh = ta.highest(high, len)
+    ll = ta.lowest(low, len)
+    rango = hh - ll
+    var float k = na
+    k := rango > 0 ? 100 * (close - ll) / rango : nz(k[1], 50.0)
+    k[d]
+
+// CCI con precio medio (máximo, mínimo, cierre) y constante de Lambert (Cava, VII.1, p. 185)
+f_cci(int len, int d) =>
+    src = hlc3
+    smaSrc = ta.sma(src, len)
+    md = ta.dev(src, len)
+    var float c = na
+    c := md > 0 ? (src - smaSrc) / (CCI_LAMBERT_CONSTANT * md) : nz(c[1], 0.0)
+    c[d]
+
+// Devuelve +DI, -DI y ADX (Cava, VIII.6.4, p. 214)
+f_adx(int len, int d) =>
+    [dp, dm, ax] = ta.dmi(len, len)
+    [dp[d], dm[d], ax[d]]
+
+// Indica si el cierre está sobre cada media
+f_emaPos(int lenCorta, int lenLarga, int d) =>
+    e20 = ta.ema(close, lenCorta)
+    e55 = ta.ema(close, lenLarga)
+    [close[d] > e20[d], close[d] > e55[d]]
+
+// ————— Calculations
+// Mensual y semanal por request.security; el diario se calcula en el propio gráfico.
+d = soloCerradasInput ? 1 : 0
+// En el marco del propio gráfico no hace falta desplazar: la barra diaria en curso es la que se opera.
+dLocal = 0
+
+[macdM, sigM] = request.security(syminfo.tickerid, TF_M, f_macd(macdFastInput, macdSlowInput, macdSignalInput, d), lookahead = barmerge.lookahead_off)
+[macdW, sigW] = request.security(syminfo.tickerid, TF_W, f_macd(macdFastInput, macdSlowInput, macdSignalInput, d), lookahead = barmerge.lookahead_off)
+[macdD, sigD] = f_macd(macdFastInput, macdSlowInput, macdSignalInput, dLocal)
+
+stochM = request.security(syminfo.tickerid, TF_M, f_stochK(stochLenInput, d), lookahead = barmerge.lookahead_off)
+stochW = request.security(syminfo.tickerid, TF_W, f_stochK(stochLenInput, d), lookahead = barmerge.lookahead_off)
+stochD = f_stochK(stochLenInput, dLocal)
+
+cciM = request.security(syminfo.tickerid, TF_M, f_cci(cciLenInput, d), lookahead = barmerge.lookahead_off)
+cciW = request.security(syminfo.tickerid, TF_W, f_cci(cciLenInput, d), lookahead = barmerge.lookahead_off)
+cciD = f_cci(cciLenInput, dLocal)
+
+[dpM, dmM, adxM] = request.security(syminfo.tickerid, TF_M, f_adx(adxLenInput, d), lookahead = barmerge.lookahead_off)
+[dpW, dmW, adxW] = request.security(syminfo.tickerid, TF_W, f_adx(adxLenInput, d), lookahead = barmerge.lookahead_off)
+[dpD, dmD, adxD] = f_adx(adxLenInput, dLocal)
+
+[sobreE20M, sobreE55M] = request.security(syminfo.tickerid, TF_M, f_emaPos(ema20LenInput, ema55LenInput, d), lookahead = barmerge.lookahead_off)
+[sobreE20W, sobreE55W] = request.security(syminfo.tickerid, TF_W, f_emaPos(ema20LenInput, ema55LenInput, d), lookahead = barmerge.lookahead_off)
+[sobreE20D, sobreE55D] = f_emaPos(ema20LenInput, ema55LenInput, dLocal)
+
+// Las tres condiciones de la fuente (Cava, I.5.3, p. 37)
+esAlcista = macdM > sigM and macdW > CERO and stochW > NIVEL_60
+esBajista = macdM < sigM and macdW < CERO and stochW < NIVEL_40
+estado = esAlcista ? "ALCISTA" : esBajista ? "BAJISTA" : "INDEFINIDO"
+
+// [Aportado]: indicadores del marco diario a cada lado (idea de Cava, III.1.4, p. 80; el recuento no es suyo)
+votosAlcistas = (macdD > sigD ? 1 : 0) + (macdD > CERO ? 1 : 0) + (stochD > NIVEL_60 ? 1 : 0) + (cciD > cciUmbralInput ? 1 : 0) + (dpD > dmD ? 1 : 0) + (sobreE20D ? 1 : 0)
+votosBajistas = (macdD < sigD ? 1 : 0) + (macdD < CERO ? 1 : 0) + (stochD < NIVEL_40 ? 1 : 0) + (cciD < -cciUmbralInput ? 1 : 0) + (dmD > dpD ? 1 : 0) + (not sobreE20D ? 1 : 0)
+
+// Avisa solo cuando cambia el estado
+cambioEstado = estado != estado[1]
+
+// ————— Visuals
+// Colores y tabla de 4 columnas por 9 filas.
+colAlc = color.new(#2E7D32, 0)
+colBaj = color.new(#C62828, 0)
+colNeu = color.new(#757575, 0)
+colCab = color.new(#37474F, 0)
+
+// Color y texto según el lado
+f_col(bool alc, bool baj) => alc ? colAlc : baj ? colBaj : colNeu
+f_txt(bool alc, bool baj, string sAlc, string sBaj, string sNeu) => alc ? sAlc : baj ? sBaj : sNeu
+
+// La posición se resuelve con ternaria sobre el input: table.new espera un valor simple
+posTabla = posicionInput == "Superior derecha" ? position.top_right : posicionInput == "Superior izquierda" ? position.top_left : posicionInput == "Inferior derecha" ? position.bottom_right : position.bottom_left
+tam = tamanoInput == "Diminuto" ? size.tiny : tamanoInput == "Normal" ? size.normal : size.small
+
+var table t = table.new(posTabla, 4, 9, border_width = 1)
+
+f_celda(int col, int fila, string txt, color bg) =>
+    table.cell(t, col, fila, txt, text_color = color.white, bgcolor = bg, text_size = tam)
+
+f_valor(float v, string fmt) => verValoresInput ? "  " + str.tostring(v, fmt) : ""
+
+if barstate.islast
+    // Cabecera
+    table.cell(t, 0, 0, "CAVA", text_color = color.white, bgcolor = colCab, text_size = tam)
+    table.cell(t, 1, 0, "MENSUAL", text_color = color.white, bgcolor = colCab, text_size = tam)
+    table.cell(t, 2, 0, "SEMANAL", text_color = color.white, bgcolor = colCab, text_size = tam)
+    table.cell(t, 3, 0, "DIARIO", text_color = color.white, bgcolor = colCab, text_size = tam)
+
+    // Fila 1 — MACD: corte
+    table.cell(t, 0, 1, "MACD corte", text_size = tam)
+    f_celda(1, 1, f_txt(macdM > sigM, macdM < sigM, "alza", "baja", "—"), f_col(macdM > sigM, macdM < sigM))
+    f_celda(2, 1, f_txt(macdW > sigW, macdW < sigW, "alza", "baja", "—"), f_col(macdW > sigW, macdW < sigW))
+    f_celda(3, 1, f_txt(macdD > sigD, macdD < sigD, "alza", "baja", "—"), f_col(macdD > sigD, macdD < sigD))
+
+    // Fila 2 — MACD: nivel cero
+    table.cell(t, 0, 2, "MACD vs 0", text_size = tam)
+    f_celda(1, 2, f_txt(macdM > CERO, macdM < CERO, ">0", "<0", "—"), f_col(macdM > CERO, macdM < CERO))
+    f_celda(2, 2, f_txt(macdW > CERO, macdW < CERO, ">0", "<0", "—"), f_col(macdW > CERO, macdW < CERO))
+    f_celda(3, 2, f_txt(macdD > CERO, macdD < CERO, ">0", "<0", "—"), f_col(macdD > CERO, macdD < CERO))
+
+    // Fila 3 — Estocástico %K
+    table.cell(t, 0, 3, "Estoc. %K", text_size = tam)
+    f_celda(1, 3, f_txt(stochM > NIVEL_60, stochM < NIVEL_40, "alto", "bajo", "medio") + f_valor(stochM, "#"), f_col(stochM > NIVEL_60, stochM < NIVEL_40))
+    f_celda(2, 3, f_txt(stochW > NIVEL_60, stochW < NIVEL_40, "alto", "bajo", "medio") + f_valor(stochW, "#"), f_col(stochW > NIVEL_60, stochW < NIVEL_40))
+    f_celda(3, 3, f_txt(stochD > NIVEL_80, stochD < NIVEL_20, "sobrec.", "sobrev.", "medio") + f_valor(stochD, "#"), f_col(stochD > NIVEL_60, stochD < NIVEL_40))
+
+    // Fila 4 — CCI
+    table.cell(t, 0, 4, "CCI ±" + str.tostring(cciUmbralInput), text_size = tam)
+    f_celda(1, 4, f_txt(cciM > cciUmbralInput, cciM < -cciUmbralInput, "sobrec.", "sobrev.", "neutro") + f_valor(cciM, "#"), f_col(cciM > cciUmbralInput, cciM < -cciUmbralInput))
+    f_celda(2, 4, f_txt(cciW > cciUmbralInput, cciW < -cciUmbralInput, "sobrec.", "sobrev.", "neutro") + f_valor(cciW, "#"), f_col(cciW > cciUmbralInput, cciW < -cciUmbralInput))
+    f_celda(3, 4, f_txt(cciD > cciUmbralInput, cciD < -cciUmbralInput, "sobrec.", "sobrev.", "neutro") + f_valor(cciD, "#"), f_col(cciD > cciUmbralInput, cciD < -cciUmbralInput))
+
+    // Fila 5 — ADX: fuerza
+    table.cell(t, 0, 5, "ADX fuerza", text_size = tam)
+    f_celda(1, 5, (adxM > ADX_MAGNIFICO ? "muy fuerte" : adxM > ADX_FUERTE ? "fuerte" : adxM < ADX_BAJO ? "sin tend." : "media") + f_valor(adxM, "#"), adxM > ADX_FUERTE ? colCab : colNeu)
+    f_celda(2, 5, (adxW > ADX_MAGNIFICO ? "muy fuerte" : adxW > ADX_FUERTE ? "fuerte" : adxW < ADX_BAJO ? "sin tend." : "media") + f_valor(adxW, "#"), adxW > ADX_FUERTE ? colCab : colNeu)
+    f_celda(3, 5, (adxD > ADX_MAGNIFICO ? "muy fuerte" : adxD > ADX_FUERTE ? "fuerte" : adxD < ADX_BAJO ? "sin tend." : "media") + f_valor(adxD, "#"), adxD > ADX_FUERTE ? colCab : colNeu)
+
+    // Fila 6 — DI: dirección
+    table.cell(t, 0, 6, "DI dirección", text_size = tam)
+    f_celda(1, 6, f_txt(dpM > dmM, dmM > dpM, "+DI", "-DI", "—"), f_col(dpM > dmM, dmM > dpM))
+    f_celda(2, 6, f_txt(dpW > dmW, dmW > dpW, "+DI", "-DI", "—"), f_col(dpW > dmW, dmW > dpW))
+    f_celda(3, 6, f_txt(dpD > dmD, dmD > dpD, "+DI", "-DI", "—"), f_col(dpD > dmD, dmD > dpD))
+
+    // Fila 7 — Precio vs medias
+    table.cell(t, 0, 7, "Precio vs EMA", text_size = tam)
+    f_celda(1, 7, (sobreE20M ? "sobre 20" : "bajo 20") + " / " + (sobreE55M ? "sobre 55" : "bajo 55"), f_col(sobreE20M and sobreE55M, not sobreE20M and not sobreE55M))
+    f_celda(2, 7, (sobreE20W ? "sobre 20" : "bajo 20") + " / " + (sobreE55W ? "sobre 55" : "bajo 55"), f_col(sobreE20W and sobreE55W, not sobreE20W and not sobreE55W))
+    f_celda(3, 7, (sobreE20D ? "sobre 20" : "bajo 20") + " / " + (sobreE55D ? "sobre 55" : "bajo 55"), f_col(sobreE20D and sobreE55D, not sobreE20D and not sobreE55D))
+
+    // Fila 8 — Semáforo y coincidencia
+    table.cell(t, 0, 8, "TENDENCIA", text_color = color.white, bgcolor = colCab, text_size = tam)
+    table.cell(t, 1, 8, estado, text_color = color.white, bgcolor = esAlcista ? colAlc : esBajista ? colBaj : colNeu, text_size = tam)
+    table.cell(t, 2, 8, "I.5.3 p.37", text_color = color.gray, text_size = tam)
+    table.cell(t, 3, 8, str.tostring(votosAlcistas) + "↑ / " + str.tostring(votosBajistas) + "↓", text_color = color.white, bgcolor = votosAlcistas > votosBajistas ? colAlc : votosBajistas > votosAlcistas ? colBaj : colNeu, text_size = tam)
+
+// ————— Alerts
+// Cambio de estado de la fila TENDENCIA y coincidencia de 5 de 6 indicadores diarios [Aportado].
+alertcondition(cambioEstado and esAlcista, "JLC42 Tablero · TENDENCIA pasa a ALCISTA", "Las tres condiciones de EA I.5.3 se alinean al alza.")
+alertcondition(cambioEstado and esBajista, "JLC42 Tablero · TENDENCIA pasa a BAJISTA", "Las tres condiciones de EA I.5.3 se alinean a la baja.")
+alertcondition(cambioEstado and not esAlcista and not esBajista, "JLC42 Tablero · TENDENCIA pasa a INDEFINIDO", "Las tres condiciones de EA I.5.3 han dejado de concordar.")
+alertcondition(votosAlcistas >= 5 and votosAlcistas[1] < 5, "JLC42 Tablero · 5 de 6 indicadores al alza", "Cinco de los seis indicadores del marco diario coinciden al alza. [Aportado]: recuento propio, lectura de la exigencia de EA III.1.4.")
+alertcondition(votosBajistas >= 5 and votosBajistas[1] < 5, "JLC42 Tablero · 5 de 6 indicadores a la baja", "Cinco de los seis indicadores del marco diario coinciden a la baja. [Aportado].")

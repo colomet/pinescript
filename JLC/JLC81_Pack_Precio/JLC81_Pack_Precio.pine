@@ -1,0 +1,127 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC81 Pack] Price: moving averages + displaced averages + pivots", shorttitle="JLC81 Price", overlay=true, max_lines_count=100)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: pack de precio en un solo slot: EMA 20, EMA 55, las tres medias desplazadas de Cava (3x3, 7x5 y 25x5) y los
+//   máximos y mínimos aislados con sus líneas. Agrupa lo de JLC61 y añade las desplazadas; opcionalmente suma la EMA 50
+//   y la SMMA 150 [Aportado]. Los scripts individuales siguen existiendo y no se tocan.
+// Cómo se lee: precio sobre la media desplazada = tendencia alcista; bajo ella = bajista. Las desplazadas se proyectan
+//   hacia delante: sus últimos tramos quedan sobre barras que aún no existen, es lo que significa «desplazada».
+//   EMA 20 = zona de entrada tras retroceso; EMA 55 = predisposición del sistema tendencial. Triángulos =
+//   máximo o mínimo aislado, con línea discontinua a la derecha. Fondo opcional: verde si el precio está sobre las
+//   tres desplazadas, rojo si está bajo las tres.
+// Datos y marco: símbolo y marco del gráfico; la fuente usa 3x3 y 7x5 en semanal y diario. Los pivotes se confirman 5
+//   velas después y se dibujan sobre la vela del pico.
+// Fuente: José Luis Cava, El arte de especular. EMA 20 y retroceso con ADX sobre 30: cap. VIII.6.6, p. 217. EMA 55 y
+//   predisposición del sistema tendencial: cap. I, p. 14. Medias desplazadas 3x3, 7x5 y 25x5, criterio precio sobre o
+//   bajo la media, y su advertencia (muchas señales falsas cerca del final de la tendencia o en un lateral
+//   amplio): cap. I.5.2, pp. 36-37. Cava cita a DiNapoli entre los autores de las desplazadas (nota 14, p. 36).
+// Créditos: código propio, sin partes de terceros. La salida al cortar la SMMA 150 es un criterio externo (vídeo de
+//   Goat Academy), sin código de esa fuente.
+// Marcas: sin marca = regla de la fuente.
+//   [Aportado] EMA 50 (la fuente no define una EMA 50 general sobre precio) y SMMA 150 (ni la SMMA ni el 150 están en
+//   los libros); ambas desactivadas por defecto. [Propuesta] pivotes de 5 velas por lado: Cava habla de máximos y
+//   mínimos aislados sin fijar parámetros. El fondo por desplazadas es del script.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Medias desplazadas: periodo y desplazamiento hacia delante (Cava, I.5.2, p. 36)
+int SMA_3_LEN = 3
+int SMA_3_OFF = 3
+int SMA_7_LEN = 7
+int SMA_7_OFF = 5
+int SMA_25_LEN = 25
+int SMA_25_OFF = 5
+
+// Grupos de ajustes
+string GRP_FUENTE = "De fuente (Cava)"
+string GRP_APORT  = "[Aportado] — no procede de Cava"
+string GRP_PIVOT  = "Pivotes [Propuesta]"
+
+// ————— Inputs
+// De fuente (Cava)
+bool verEma20Input = input.bool(true, "EMA 20 · retroceso con ADX (VIII.6.6)", group = GRP_FUENTE)
+int  ema20LenInput = input.int(20, "EMA 20 · período", minval = 1, group = GRP_FUENTE)
+bool verEma55Input = input.bool(true, "EMA 55 · predisposición (Cap. I)", group = GRP_FUENTE)
+int  ema55LenInput = input.int(55, "EMA 55 · período", minval = 1, group = GRP_FUENTE)
+bool verDesplazadasInput = input.bool(true, "Medias desplazadas 3x3 / 7x5 / 25x5 (I.5.2)", group = GRP_FUENTE)
+bool verSemaforoDesplInput = input.bool(false, "Colorear fondo según las desplazadas", tooltip = "Verde si el precio está por encima de las tres; rojo si por debajo de las tres; sin color si discrepan.", group = GRP_FUENTE)
+
+// Aportados: no proceden de Cava
+bool verEma50Input = input.bool(false, "EMA 50 [Aportado]", group = GRP_APORT)
+int  ema50LenInput = input.int(50, "EMA 50 · período", minval = 1, group = GRP_APORT)
+bool verSmma150Input = input.bool(false, "SMMA 150 [Aportado]", group = GRP_APORT)
+int  smma150LenInput = input.int(150, "SMMA 150 · período", minval = 1, group = GRP_APORT)
+
+// Pivotes [Propuesta]
+bool verPivotsInput = input.bool(true, "Máximos/mínimos aislados", group = GRP_PIVOT)
+int leftBarsInput   = input.int(5, "Velas izquierda (filtro)", minval = 1, group = GRP_PIVOT)
+int rightBarsInput  = input.int(5, "Velas derecha (confirmación)", minval = 1, group = GRP_PIVOT)
+bool verLineasPivotInput = input.bool(true, "Proyectar líneas de soporte/resistencia", group = GRP_PIVOT)
+
+// ————— Calculations
+// Medias exponenciales: 20 (Cava, VIII.6.6, p. 217) y 55 (Cava, cap. I, p. 14); la 50 es [Aportado]
+ema20 = ta.ema(close, ema20LenInput)
+ema55 = ta.ema(close, ema55LenInput)
+ema50 = ta.ema(close, ema50LenInput)
+
+// SMMA 150 [Aportado] = RMA de Wilder
+smma150 = ta.rma(close, smma150LenInput)
+
+// Medias desplazadas (Cava, I.5.2, p. 36): el desplazamiento va en el offset de plot(); la serie es una SMA normal
+sma3  = ta.sma(close, SMA_3_LEN)
+sma7  = ta.sma(close, SMA_7_LEN)
+sma25 = ta.sma(close, SMA_25_LEN)
+
+// Criterio de tendencia (Cava, I.5.2, p. 36): el precio se compara con el valor que la media desplazada muestra
+// hoy, que es el calculado hace `offset` barras
+sobreDespl3  = close > sma3[SMA_3_OFF]
+sobreDespl7  = close > sma7[SMA_7_OFF]
+sobreDespl25 = close > sma25[SMA_25_OFF]
+
+todasAlcistas = sobreDespl3 and sobreDespl7 and sobreDespl25
+todasBajistas = not sobreDespl3 and not sobreDespl7 and not sobreDespl25
+
+// Máximos y mínimos aislados [Propuesta]: pivotes de 5 velas por lado
+maxAislado = ta.pivothigh(high, leftBarsInput, rightBarsInput)
+minAislado = ta.pivotlow(low, leftBarsInput, rightBarsInput)
+
+// ————— Visuals
+// Medias, desplazadas, fondo opcional, pivotes y sus líneas.
+plot(verEma20Input ? ema20 : na, "EMA 20", color = color.new(#1565C0, 0), linewidth = 2)
+plot(verEma55Input ? ema55 : na, "EMA 55", color = color.new(#00838F, 0), linewidth = 2)
+plot(verEma50Input ? ema50 : na, "EMA 50 [Aportado]", color = color.new(#9E9E9E, 20), linewidth = 1)
+plot(verSmma150Input ? smma150 : na, "SMMA 150 [Aportado]", color = color.new(#673AB7, 20), linewidth = 1)
+
+plot(verDesplazadasInput ? sma3 : na, "SMA 3x3", color = color.new(#EF6C00, 0), linewidth = 1, offset = SMA_3_OFF)
+plot(verDesplazadasInput ? sma7 : na, "SMA 7x5", color = color.new(#F9A825, 0), linewidth = 1, offset = SMA_7_OFF)
+plot(verDesplazadasInput ? sma25 : na, "SMA 25x5", color = color.new(#6D4C41, 0), linewidth = 1, offset = SMA_25_OFF)
+
+bgcolor(verSemaforoDesplInput ? (todasAlcistas ? color.new(#2E7D32, 92) : todasBajistas ? color.new(#C62828, 92) : na) : na, title = "Tendencia por medias desplazadas (I.5.2)")
+
+plotshape(verPivotsInput and not na(maxAislado), style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0), size = size.small, offset = -rightBarsInput, title = "Máximo aislado")
+plotshape(verPivotsInput and not na(minAislado), style = shape.triangleup, location = location.belowbar, color = color.new(color.green, 0), size = size.small, offset = -rightBarsInput, title = "Mínimo aislado")
+
+var line maxLine = na
+var line minLine = na
+
+if verPivotsInput and verLineasPivotInput and not na(maxAislado)
+    line.delete(maxLine)
+    maxLine := line.new(bar_index - rightBarsInput, maxAislado, bar_index, maxAislado, extend = extend.right, color = color.red, style = line.style_dashed)
+
+if verPivotsInput and verLineasPivotInput and not na(minAislado)
+    line.delete(minLine)
+    minLine := line.new(bar_index - rightBarsInput, minAislado, bar_index, minAislado, extend = extend.right, color = color.green, style = line.style_dashed)
+
+// ————— Alerts
+// Cruces con EMA 20 y EMA 55, y las tres desplazadas alineadas.
+alertcondition(ta.crossover(close, ema20), "JLC81 Precio · recupera la EMA20", "El precio vuelve a superar la EMA20. Con ADX sobre 30, es la entrada de EA VIII.6.6.")
+alertcondition(ta.crossunder(close, ema20), "JLC81 Precio · pierde la EMA20", "El precio pierde la EMA20.")
+alertcondition(ta.crossunder(close, ema55), "JLC81 Precio · pierde la EMA55", "El precio pierde la EMA55: cambia la predisposición del sistema del Cap. I.")
+alertcondition(todasAlcistas and not todasAlcistas[1], "JLC81 Desplazadas · las tres al alza", "El precio ha quedado por encima de las tres medias desplazadas (3x3, 7x5, 25x5). Tendencia alcista según EA I.5.2.")
+alertcondition(todasBajistas and not todasBajistas[1], "JLC81 Desplazadas · las tres a la baja", "El precio ha quedado por debajo de las tres medias desplazadas. Tendencia bajista según EA I.5.2.")

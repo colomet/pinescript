@@ -1,0 +1,107 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC12 Sentiment] Put/Call ratio + Bollinger bands", shorttitle = "JLC12 PutCall",
+ overlay = false, precision = 2)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: ratio put/call de la CBOE (Bolsa de Opciones de Chicago): volumen de opciones de venta dividido entre
+//   el de opciones de compra, con bandas de Bollinger de 20 sesiones y desviación 2. Se lee por opinión contraria.
+// Cómo se lee: ratio alto = miedo y suelo probable; ratio bajo = confianza y techo probable.
+//   Círculo rojo arriba: el ratio cierra sobre la banda superior de Bollinger (extremo de miedo).
+//   Círculo verde abajo: el ratio cierra bajo la banda inferior (extremo de complacencia).
+//   Líneas discontinuas: niveles 1,13 (suelo probable) y 0,52 (techo probable) del ratio global.
+// Datos y marco: ratio por input (USI:PCC, el ratio global, por defecto); no usa el símbolo del gráfico. Diario.
+// Fuente: José Luis Cava, El arte de especular, cap. II.2.4 «Ratio put/call global e índices» y II.2.4.1
+//   «Ratio put/call global», pp. 62-65 (paráfrasis): rangos habituales y niveles de giro del ratio global (p. 63);
+//   extremo de miedo con cierre sobre la banda superior de Bollinger de 20 sesiones y desviación 2 (p. 64).
+// Créditos: código propio, sin partes de terceros.
+// Marcas: sin marca = regla de la fuente.
+//   [Aportado] suavizado SMA del ratio: Cava cita medias de 5 y 10 días (pp. 63 y 65); el script no usa los
+//   niveles que da para la de 5 días.
+//   [Elaboración] cierre bajo la banda inferior como extremo de complacencia: Cava describe esa zona (pp. 64-65)
+//   sin regla de cierre.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Cifras de la fuente: cap. II.2.4.1, pp. 63-64.
+const float PCC_NIVEL_SUELO = 1.13 // exceso de miedo: suelo probable a corto plazo (p. 63)
+const float PCC_NIVEL_TECHO = 0.52 // exceso de confianza: techo probable a corto plazo (p. 63)
+const int   PCC_BB_LENGTH   = 20   // media de 20 sesiones (p. 64)
+const float PCC_BB_MULT     = 2.0  // desviación 2 (p. 64)
+// [Aportado]: valor por defecto del suavizado; no es cifra de la fuente.
+const int   PCC_SUAVIZADO_LENGTH = 10
+
+const string GRUPO_DATOS   = "Datos"
+const string GRUPO_BANDAS  = "Bandas de Bollinger"
+const string GRUPO_VISUAL  = "Visualización"
+
+// ————— Inputs
+string pccSymbolInput = input.symbol("USI:PCC", "Símbolo del ratio put/call", group = GRUPO_DATOS,
+ tooltip = "El script NO usa el símbolo del gráfico. USI:PCC es el ratio global (acciones e índices), " +
+ "el del rango 0,52-1,13 de la fuente. USI:PCCE es solo de acciones; su rango en la fuente es 0,35-0,75.")
+int bbLenInput = input.int(PCC_BB_LENGTH, "Período", minval = 1, maxval = 200, group = GRUPO_BANDAS,
+ tooltip = "Fuente: media de 20 sesiones. Cambiarlo aleja el script de la regla de la fuente.")
+float bbMultInput = input.float(PCC_BB_MULT, "Desviación", minval = 0.1, maxval = 10.0, step = 0.1,
+ group = GRUPO_BANDAS,
+ tooltip = "Fuente: desviación 2. Cambiarla aleja el script de la regla de la fuente.")
+bool mostrarNivelesInput = input.bool(true, "Mostrar niveles absolutos 0,52 y 1,13", group = GRUPO_VISUAL,
+ tooltip = "Dibuja dos líneas discontinuas con los niveles de giro del ratio global que da la fuente. " +
+ "Se leen junto a las bandas, no en su lugar.")
+int suavizadoInput = input.int(PCC_SUAVIZADO_LENGTH, "Suavizado de lectura (SMA) [Aportado]", minval = 1,
+ maxval = 200, group = GRUPO_VISUAL,
+ tooltip = "Cava cita medias de 10 o 5 días del ratio, pero no da una regla con ellas. " +
+ "Solo ayuda visual: la regla de extremo son las bandas de Bollinger.")
+string fichaInput = input.text_area(
+ "Cava, El arte de especular, II.2.4.1 (pp. 62-65). Solo diario. Suavizado [Aportado].",
+ "Ficha", active = false)
+
+// ————— Calculations
+// Datos: el ratio se pide por input; el script no usa el símbolo del gráfico.
+float pcc = request.security(pccSymbolInput, timeframe.period, close, ignore_invalid_symbol = true)
+
+float bbBasis = ta.sma(pcc, bbLenInput)
+float bbDev   = bbMultInput * ta.stdev(pcc, bbLenInput)
+float bbUpper = bbBasis + bbDev
+float bbLower = bbBasis - bbDev
+
+float pccSuave = ta.sma(pcc, suavizadoInput)
+
+// Regla de la fuente: cierre por encima de la banda superior = extremo de miedo (p. 64).
+bool extremoMiedo = not na(pcc) and pcc > bbUpper
+// [Elaboración]: cierre por debajo de la banda inferior = extremo de complacencia (pp. 64-65).
+bool extremoComplacencia = not na(pcc) and pcc < bbLower
+
+// Se marca solo la primera barra de cada tramo fuera de banda.
+bool entraMiedo        = extremoMiedo and not extremoMiedo[1]
+bool entraComplacencia = extremoComplacencia and not extremoComplacencia[1]
+
+// ————— Visuals
+plot(pcc, "Put/Call", color = color.new(#2E7D32, 0), linewidth = 2)
+plot(pccSuave, "Suavizado [Aportado]", color = color.new(#2E7D32, 60), linewidth = 1)
+
+pu = plot(bbUpper, "Bollinger superior", color = color.new(color.gray, 40))
+pl = plot(bbLower, "Bollinger inferior", color = color.new(color.gray, 40))
+plot(bbBasis, "Bollinger base (SMA20)", color = color.new(color.gray, 70))
+fill(pu, pl, color = color.new(color.gray, 92))
+
+hline(mostrarNivelesInput ? PCC_NIVEL_SUELO : na, "Suelo (1,13)", color = color.gray,
+ linestyle = hline.style_dashed)
+hline(mostrarNivelesInput ? PCC_NIVEL_TECHO : na, "Techo (0,52)", color = color.gray,
+ linestyle = hline.style_dashed)
+
+plotshape(entraMiedo, title = "Extremo de miedo (sobre Bollinger superior)", style = shape.circle,
+ location = location.top, color = color.new(color.red, 0), size = size.tiny)
+plotshape(entraComplacencia, title = "Extremo de complacencia [Elaboración]", style = shape.circle,
+ location = location.bottom, color = color.new(color.green, 0), size = size.tiny)
+
+// ————— Alerts
+alertcondition(entraMiedo, "JLC12 Put/Call · extremo de miedo",
+ "El ratio put/call ha cerrado por encima de su banda superior de Bollinger (20/2): extremo de miedo " +
+ "según Cava (II.2.4.1). Por opinión contraria, suelo probable a corto plazo.")
+alertcondition(entraComplacencia, "JLC12 Put/Call · extremo de complacencia",
+ "El ratio put/call ha cerrado por debajo de su banda inferior de Bollinger (20/2): extremo de " +
+ "complacencia. [Elaboración]: Cava describe esa zona, no la regla de cierre. Techo probable a corto plazo.")

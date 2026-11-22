@@ -1,0 +1,122 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[JLC51 Regime] ADX/DI: 14 {40/30/20}", shorttitle="JLC51 ADX", overlay=false)
+
+// ————— About
+// Versión: 0.3.0.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: ADX con +DI y -DI en un panel propio, con dos señales de inicio de tendencia (la «mejor señal» de Cava y
+//   la regla de Elder que Cava recoge) y un fondo que marca cuándo la tendencia es fuerte.
+// Cómo se lee: el ADX mide la fuerza de la tendencia, no su dirección; la dirección la da cuál de los DI está más
+//   alto. Fondo gris con ADX sobre 30 (tendencia fortalecida); fondo verde con ADX sobre 40 y subiendo. Triángulo
+//   verde/rojo = mejor señal de compra/venta: el ADX cayó bajo ambos DI y bajo 20, se giró al alza y superó al DI
+//   más débil, con el DI dominante subiendo y el otro bajando. Círculo naranja = regla de Elder: tras caer bajo
+//   los DI, el ADX sube entre 4 y 12 puntos desde su mínimo.
+// Datos y marco: símbolo y marco del gráfico; sin lecturas de otros marcos.
+//   La barra en curso puede variar hasta su cierre.
+// Fuente: José Luis Cava, El arte de especular, cap. VIII. ADX y DI de 14 periodos: VIII.5.1, p. 207 y VIII.6.4,
+//   p. 214. Niveles 20, 30 y 40: VIII.6.1, p. 208 y VIII.6.5, p. 215. Mejor señal de compra y de venta: VIII.6.2
+//   y VIII.6.3, pp. 209-211. Regla de Elder («Trading for a Living»): p. 213.
+// Créditos: código propio, sin partes de terceros. ta.dmi() de TradingView calcula el ADX y los DI.
+// Marcas: sin marca = regla de la fuente.
+//   [Propuesta] caducidad de la condición previa: la fuente dice «permanecer cierto tiempo» bajo 20 sin cuantificar
+//   cuánto ni hasta cuándo vale; el script la arma al tocar ADX < 20 bajo ambos DI y la desarma a las 60 barras o
+//   al superar 30 (ambas ajustables).
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+// ————— Constants
+// Niveles del ADX.
+// Bajo 20 = lectura baja (Cava, VIII.6.1, p. 208); sobre 30 = tendencia fortalecida; sobre 40 con pendiente
+// positiva = resultados magníficos (Cava, VIII.6.5, p. 215)
+float ADX_LOW_LEVEL  = 20   // lectura baja / condición previa de la mejor señal
+float ADX_MID_LEVEL  = 30   // tendencia fortalecida / operativa
+float ADX_HIGH_LEVEL = 40   // "magnífico" con pendiente positiva
+
+// Regla de Elder (Cava, p. 213): subida del ADX de 4 a 12 puntos desde su mínimo
+int ELDER_RISE_MIN = 4
+int ELDER_RISE_MAX = 12
+
+// ————— Inputs
+// Periodo y caducidad de la condición previa.
+// Periodo compartido por ADX, +DI y -DI: 14, el de Wilder (Cava, VIII.6.4, p. 214)
+int lenInput = input.int(14, "Período ADX/DI (n)", minval = 1)
+
+// [Propuesta] Cava dice «permanecer cierto tiempo» con lecturas bajas (VIII.6.2, p. 209) sin cuantificarlo.
+// Sin caducidad, una lectura baja antigua seguiría habilitando la señal con el ADX en 45, lo contrario de lo que
+// describe la fuente; por eso hay dos caducidades ajustables:
+int caducidadInput = input.int(60, "Caducidad de la condición previa (barras)", minval = 1, tooltip = "Barras máximas entre la última lectura baja bajo ambos DI y el disparo de la señal. [Propuesta]: Cava no cuantifica el plazo.")
+bool desarmarPorNivelInput = input.bool(true, "Desarmar si el ADX supera el nivel 30 sin disparar", tooltip = "Por encima de 30 la tendencia ya está fortalecida: deja de ser una tendencia 'emergiendo' y la señal de VIII.6.2 pierde su sentido.")
+
+// ————— Calculations
+// ADX y DI, y pendiente de cada DI.
+[diplus, diminus, adx] = ta.dmi(lenInput, lenInput)
+
+diplusSube   = diplus > diplus[1]
+diplusBaja   = diplus < diplus[1]
+diminusSube  = diminus > diminus[1]
+diminusBaja  = diminus < diminus[1]
+
+adxBajoAmbosDI = adx < diplus and adx < diminus
+
+// Condición previa de la mejor señal: ADX bajo ambos DI y bajo 20 (Cava, VIII.6.2, p. 209)
+var bool estuvoBajoAmbos = false
+var int  barraCondicion  = na
+
+if adxBajoAmbosDI and adx < ADX_LOW_LEVEL
+    estuvoBajoAmbos := true
+    barraCondicion  := bar_index
+
+// Caducidad de la condición previa [Propuesta]
+caducada = estuvoBajoAmbos and (bar_index - nz(barraCondicion, bar_index) > caducidadInput or (desarmarPorNivelInput and adx > ADX_MID_LEVEL))
+if caducada
+    estuvoBajoAmbos := false
+
+// Compra (Cava, VIII.6.2, p. 209): el ADX supera al -DI (el más débil), con +DI dominante y subiendo y -DI bajando
+condCompra = estuvoBajoAmbos and diplus > diminus and ta.crossover(adx, diminus) and diplusSube and diminusBaja
+// Venta (Cava, VIII.6.3, p. 211): simétrica, el ADX supera al +DI, con -DI dominante y subiendo y +DI bajando
+condVenta  = estuvoBajoAmbos and diminus > diplus and ta.crossover(adx, diplus) and diminusSube and diplusBaja
+
+if condCompra or condVenta
+    estuvoBajoAmbos := false
+
+// Regla de Elder (Cava, p. 213): el ADX cae bajo los DI, se gira al alza y sube de 4 a 12 puntos desde su mínimo.
+// Dispara una sola vez, al cruzar el umbral de 4, y exige haber estado antes bajo los DI.
+var bool estuvoBajoDIs = false
+if adxBajoAmbosDI
+    estuvoBajoDIs := true
+
+var float adxMin = adx
+if adx < adx[1]
+    adxMin := adx  // se actualiza mientras el ADX cae; queda fijo en el mínimo al girar
+
+subidaDesdeMinimo = adx - adxMin
+elderSignal = estuvoBajoDIs and adx > adx[1] and ta.crossover(subidaDesdeMinimo, float(ELDER_RISE_MIN)) and subidaDesdeMinimo <= ELDER_RISE_MAX
+
+if elderSignal
+    estuvoBajoDIs := false
+
+// Fondo: tendencia fortalecida (sobre 30) y magnífica (sobre 40 con pendiente positiva)
+bgFuerte    = adx > ADX_MID_LEVEL
+bgMagnifico = adx > ADX_HIGH_LEVEL and adx > adx[1]
+
+// ————— Visuals
+// Líneas, niveles, señales y fondo.
+plot(adx, "ADX", color = color.new(#2E7D32, 0), linewidth = 2)
+plot(diplus, "+DI", color = color.new(#1565C0, 0), linewidth = 1)
+plot(diminus, "-DI", color = color.new(#C62828, 0), linewidth = 1)
+
+h40 = hline(ADX_HIGH_LEVEL, "Magnífico (40)", color = color.gray, linestyle = hline.style_dashed)
+h30 = hline(ADX_MID_LEVEL, "Tendencia fuerte (30)", color = color.gray, linestyle = hline.style_solid)
+h20 = hline(ADX_LOW_LEVEL, "Lectura baja (20)", color = color.gray, linestyle = hline.style_dashed)
+// El hline base se declara como variable propia: crearlo en línea dentro de fill() es frágil entre versiones
+hBase = hline(0, "Base (0)", color = color.new(color.gray, 100), display = display.none)
+fill(h20, hBase, color = color.new(color.gray, 92))
+
+plotshape(condCompra, title = "Mejor señal de compra (VIII.6.2)", style = shape.triangleup, location = location.bottom, color = color.new(color.green, 0), size = size.small)
+plotshape(condVenta, title = "Mejor señal de venta (VIII.6.2)", style = shape.triangledown, location = location.top, color = color.new(color.red, 0), size = size.small)
+
+plotshape(elderSignal, title = "Giro ADX (regla de Elder, 4-12 pts)", style = shape.circle, location = location.bottom, color = color.new(color.orange, 0), size = size.tiny)
+
+bgcolor(bgMagnifico ? color.new(color.green, 88) : bgFuerte ? color.new(color.gray, 94) : na, title = "Zona de fuerza del ADX")

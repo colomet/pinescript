@@ -1,0 +1,101 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SPDX-License-Identifier: MPL-2.0
+// © colomet 2026
+
+//@version=6
+indicator("[GEN81 Pack] RSI and MACD", shorttitle = "GEN81 RSI+MACD", overlay = false, precision = 2)
+
+// ————— About
+// Versión: 0.1.2.0 · Explicit Versioning (W.X.Y.Z) · 22/11/2026
+// Qué es: pack de dos indicadores en un solo panel: RSI (categoría Diagnostic) y MACD con línea, señal e
+// histograma (categoría Trend). El MACD se multiplica por un factor solo para dibujarlo junto al RSI (0 a 100):
+// cruces y divergencias se mantienen, pero los valores del MACD que se ven no son los reales. Van juntos por
+// decisión de uso: verlos a la vez en el mismo panel.
+// Cómo se lee: línea verde = RSI; línea gris discontinua = nivel clave del RSI (40 por defecto). Columnas =
+// histograma del MACD (verde azulado sobre cero, granate bajo cero); línea azul = MACD; línea roja = señal;
+// línea gris continua = cero del MACD. Colores por defecto, ajustables. No hay señales ni alertas: el nivel
+// clave solo se dibuja.
+// Datos y marco: gráfico actual, cualquier marco temporal. No pide símbolos externos.
+// Fuente: David Trullás, script «RSI y MACD Completo». RSI 14, MACD 12-26-9, nivel 40 y factor 30: parámetros
+// del autor, sin fuente que los fije. Cálculo con ta.rsi y ta.macd de TradingView.
+// Créditos: adaptación del script «RSI y MACD Completo» de David Trullás, que no declara licencia. Mejoras:
+// estructura del lote, tooltips, ficha en ajustes, títulos sin cifras fijas y línea cero gris y ajustable.
+// El cálculo es el del original.
+// Marcas: sin marca = regla de la fuente.
+// [Aportado] RSI 14, MACD 12-26-9, nivel clave 40 y factor 30: de Trullás, sin fuente que los fije.
+// Aviso: herramienta de análisis; no es una recomendación de inversión.
+
+
+// ————— Constants
+const int    RSI_LEN_DEFAULT   = 14   // [Aportado] periodo del RSI
+const float  RSI_LEVEL_DEFAULT = 40.0 // [Aportado] nivel clave del RSI
+const float  ZOOM_DEFAULT      = 30.0 // [Aportado] factor de dibujo del MACD
+const float  ZOOM_MIN          = 1.0  // Con 1 se ve el MACD real
+const float  ZOOM_MAX          = 200.0 // Tope del factor
+const int    MACD_FAST_LEN     = 12   // [Aportado] media rápida del MACD
+const int    MACD_SLOW_LEN     = 26   // [Aportado] media lenta del MACD
+const int    MACD_SIGNAL_LEN   = 9    // [Aportado] media de la señal del MACD
+const color  COLOR_RSI         = color.green  // Línea del RSI
+const color  COLOR_MACD        = color.blue   // Línea del MACD
+const color  COLOR_SIGNAL      = color.red    // Línea de señal
+const color  COLOR_HIST_POS    = color.teal   // Histograma sobre cero
+const color  COLOR_HIST_NEG    = color.maroon // Histograma bajo cero
+const color  COLOR_ZERO        = color.gray   // Línea cero; el negro del original no se ve en tema oscuro
+const string GRP_RSI           = "RSI"                      // Ajustes del RSI
+const string GRP_MACD          = "MACD (escala del dibujo)" // Ajuste que solo cambia el dibujo del MACD
+const string GRP_LOOK          = "Aspecto"                  // Ajustes que solo cambian el dibujo
+const string GRP_INFO          = "Info"                     // Bloque informativo
+
+
+// ————— Inputs
+int rsiLenInput = input.int(RSI_LEN_DEFAULT, "Periodo RSI (velas)", minval = 1, maxval = 500, group = GRP_RSI,
+     tooltip = "Velas del RSI. Con 14: 14 sesiones en diario (casi 3 semanas), 14 semanas en semanal " +
+     "(unos 3 meses). Menos velas, más nervioso; más velas, más suave.")
+
+float rsiLevelInput = input.float(RSI_LEVEL_DEFAULT, "Nivel clave RSI", minval = 0.0, maxval = 100.0,
+     group = GRP_RSI,
+     tooltip = "Línea horizontal de referencia del RSI. Por defecto 40, el nivel del autor. Solo se dibuja: " +
+     "el script no da señal al cruzarla.")
+
+float macdZoomInput = input.float(ZOOM_DEFAULT, "Zoom del MACD (factor)", minval = ZOOM_MIN, maxval = ZOOM_MAX,
+     group = GRP_MACD,
+     tooltip = "Solo dibujo. Multiplica línea, señal e histograma del MACD por este número para que se vean " +
+     "junto al RSI (0 a 100). Cruces y divergencias no cambian, pero los valores que ves ya no son los " +
+     "reales del MACD. Con 1 ves el MACD real. El factor adecuado depende del precio del activo.")
+
+// Colores. Sin «inline»: un solo ajuste por fila.
+color rsiColorInput = input.color(COLOR_RSI, "Color línea RSI", group = GRP_LOOK)
+color macdColorInput = input.color(COLOR_MACD, "Color línea MACD", group = GRP_LOOK)
+color signalColorInput = input.color(COLOR_SIGNAL, "Color línea de señal", group = GRP_LOOK)
+color histPosColorInput = input.color(COLOR_HIST_POS, "Color histograma sobre cero", group = GRP_LOOK)
+color histNegColorInput = input.color(COLOR_HIST_NEG, "Color histograma bajo cero", group = GRP_LOOK)
+color zeroColorInput = input.color(COLOR_ZERO, "Color línea cero", group = GRP_LOOK,
+     tooltip = "Línea cero del MACD. Gris por defecto para que se vea en tema claro y oscuro.")
+
+// Ficha de solo lectura («active = false»).
+string infoInput = input.text_area("RSI y MACD en un solo panel. El MACD va multiplicado por un zoom solo para " +
+     "dibujarlo junto al RSI: cruces y divergencias se mantienen, los valores no son los reales. " +
+     "Sin señales ni alertas.", "Resumen", group = GRP_INFO, active = false)
+
+
+// ————— Calculations
+// RSI y MACD estándar de TradingView, como en el original. El zoom multiplica por igual línea, señal e
+// histograma, así que cruces y divergencias no cambian.
+[macdLine, signalLine, histLine] = ta.macd(close, MACD_FAST_LEN, MACD_SLOW_LEN, MACD_SIGNAL_LEN)
+float rsiValue = ta.rsi(close, rsiLenInput)
+
+float macdScaled = macdLine * macdZoomInput      // Línea MACD al tamaño del dibujo
+float signalScaled = signalLine * macdZoomInput  // Señal al tamaño del dibujo
+float histScaled = histLine * macdZoomInput      // Histograma al tamaño del dibujo
+
+
+// ————— Visuals
+// Cada plot aparece en Settings > Style. Títulos sin cifras fijas: los parámetros son ajustables.
+plot(histScaled, "Histograma MACD (con zoom)", color = histScaled >= 0 ? histPosColorInput : histNegColorInput,
+     style = plot.style_columns)
+plot(macdScaled, "Línea MACD (con zoom)", color = macdColorInput, linewidth = 2)
+plot(signalScaled, "Línea de señal (con zoom)", color = signalColorInput, linewidth = 1)
+plot(rsiValue, "RSI", color = rsiColorInput, linewidth = 2)
+
+hline(rsiLevelInput, "Nivel clave RSI", color = color.gray, linestyle = hline.style_dashed)
+hline(0, "Línea cero", color = zeroColorInput, linestyle = hline.style_solid)
