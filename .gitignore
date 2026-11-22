@@ -1,0 +1,12 @@
+# Archivos que crea el sistema operativo o el editor, no el proyecto.
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Copias de seguridad y temporales de trabajo.
+*.bak
+*.orig
+*.tmp
+*~

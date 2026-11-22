@@ -1,0 +1,16 @@
+# Controla el selector que sale en «New issue».
+#
+# blank_issues_enabled: false lleva a quien avisa a una de las dos plantillas.
+# Las dos piden lo que de otro modo cuesta una vuelta más: qué script y qué
+# versión, y cómo reproducirlo.
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: Vulnerabilidad de seguridad
+    url: https://github.com/colomet/pinescript/security/advisories/new
+    about: Avisa en privado. No abras un issue público para esto.
+
+  - name: Cómo está organizado el repositorio
+    url: https://github.com/colomet/pinescript/blob/main/README.md
+    about: Nombres de los scripts, familias, marcas del código y versiones.

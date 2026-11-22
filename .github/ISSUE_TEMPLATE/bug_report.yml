@@ -1,0 +1,74 @@
+name: Fallo en un script
+description: Un script da un resultado incorrecto, se ve mal o no se guarda en TradingView
+title: "[Fallo] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cuanto más concreto sea el aviso, antes se puede reproducir.
+
+        Si es un problema de seguridad, no uses este formulario: mira la política de seguridad del repositorio.
+
+  - type: input
+    id: script
+    attributes:
+      label: Script
+      description: El nombre de su carpeta en el repositorio.
+      placeholder: JLC63_Diagnostico_CCI
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Versión del script
+      description: La que pone la cabecera del código, en la línea «Versión».
+      placeholder: 0.1.0.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: que-ocurre
+    attributes:
+      label: Qué ocurre
+      description: Descripción clara del problema.
+    validations:
+      required: true
+
+  - type: textarea
+    id: pasos
+    attributes:
+      label: Cómo reproducirlo
+      description: Símbolo, marco temporal y ajustes que has cambiado respecto a los de serie.
+      placeholder: |
+        1. Añadir el indicador a un gráfico de ...
+        2. Con el marco temporal ...
+        3. Cambiar el ajuste ...
+        4. Se observa ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Qué esperabas que pasara
+    validations:
+      required: true
+
+  - type: input
+    id: entorno
+    attributes:
+      label: Dónde lo usas
+      description: Navegador, aplicación de escritorio o móvil de TradingView.
+      placeholder: Navegador, Windows 11
+    validations:
+      required: false
+
+  - type: textarea
+    id: captura
+    attributes:
+      label: Captura o mensaje de error
+      description: Arrastra aquí una imagen o pega el mensaje que da TradingView.
+    validations:
+      required: false

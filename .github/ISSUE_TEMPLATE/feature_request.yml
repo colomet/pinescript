@@ -1,0 +1,80 @@
+name: Propuesta
+description: Una mejora de un script, un script nuevo o un cambio en las guías
+title: "[Propuesta] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe la situación, no la solución que ya tienes pensada.
+
+  - type: dropdown
+    id: tipo
+    attributes:
+      label: Qué propones
+      options:
+        - Mejora de un script que ya está en el repositorio
+        - Un script nuevo
+        - Un cambio en una guía o en el README
+    validations:
+      required: true
+
+  - type: input
+    id: script
+    attributes:
+      label: Script
+      description: El nombre de su carpeta, si la propuesta es sobre uno que ya está.
+      placeholder: GEN41_Rector_CanalRegresionLargoPlazo_ADL
+    validations:
+      required: false
+
+  - type: textarea
+    id: problema
+    attributes:
+      label: El problema
+      description: Qué resulta difícil o imposible ahora.
+    validations:
+      required: true
+
+  - type: textarea
+    id: propuesta
+    attributes:
+      label: Qué te gustaría que pasara
+    validations:
+      required: true
+
+  - type: textarea
+    id: fuente
+    attributes:
+      label: De dónde sale la regla
+      description: Si es una regla de un libro, indica el capítulo y la página y explícala con tus palabras. No pegues texto del libro.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: senales
+    attributes:
+      label: ¿Cambia las señales de un script que ya se usa?
+      description: Si cambia lo que el script señala o cómo se usa, quien ya lo tiene en su gráfico lo notará.
+      options:
+        - "No"
+        - "Sí"
+        - No lo sé
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas que has valorado
+      description: Incluida la de no hacer nada; a veces es la buena.
+    validations:
+      required: false
+
+  - type: textarea
+    id: otros
+    attributes:
+      label: Algo más
+      description: Ejemplos, capturas, enlaces.
+    validations:
+      required: false
